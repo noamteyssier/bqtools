@@ -24,7 +24,7 @@ pub use grep::FuzzyArgs;
 pub use grep::{GrepCommand, PatternFileArgs};
 pub use info::InfoCommand;
 pub use input::{InputBinseq, InputFile, MultiInputBinseq};
-pub use output::{BinseqConfig, BinseqMode, Mate, OutputBinseq, OutputFile};
+pub use output::{BinseqConfig, BinseqMode, Mate, OutputBinseq, OutputBinseqInherited, OutputFile};
 pub use pipe::PipeCommand;
 pub use qc::{QcCommand, QcOptions};
 pub use revcomp::RevcompCommand;

@@ -34,7 +34,7 @@ pub fn run(args: &RevcompCommand) -> Result<()> {
     }
 
     let builder = get_builder(args)?;
-    let ohandle = args.output.as_writer()?;
+    let ohandle = args.output.as_writer(args.input.mode()?)?;
     let writer = builder.build(ohandle)?;
     let mut processor = RevCompProcessor::new(writer, args.mate)?;
 

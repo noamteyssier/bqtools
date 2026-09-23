@@ -166,16 +166,6 @@ pub struct OutputBinseq {
     pub pipe: bool,
 }
 impl OutputBinseq {
-    pub fn as_writer(&self) -> Result<Box<dyn Write + Send>> {
-        if self.output.is_none() && !self.pipe {
-            bail!(
-                "Refusing to write binary BINSEQ data to stdout. Provide an output path with `-o/--output`, or pass `--pipe` to write to stdout explicitly."
-            );
-        }
-        let writer = match_output(self.output.as_deref())?;
-        Ok(writer)
-    }
-
     pub fn mode(&self) -> Result<BinseqMode> {
         if let Some(mode) = self.options.mode {
             Ok(mode)
@@ -189,6 +179,53 @@ impl OutputBinseq {
 
     pub fn threads(&self) -> usize {
         self.options.threads()
+    }
+}
+
+/// BINSEQ output for commands that copy the input file's mode and encoding settings.
+#[derive(Parser, Debug, Clone)]
+#[clap(next_help_heading = "OUTPUT BINSEQ OPTIONS")]
+pub struct OutputBinseqInherited {
+    /// Output binseq file
+    ///
+    /// The output keeps the input's BINSEQ mode and settings, so a `.bq/.vbq/.cbq`
+    /// extension must match the input. To output to stdout, use the `--pipe` flag.
+    #[clap(short = 'o', long)]
+    pub output: Option<String>,
+
+    /// Pipe the output to stdout
+    #[clap(long, conflicts_with = "output")]
+    pub pipe: bool,
+
+    /// Number of threads to use (0 = all CPUs; clamped to CPU count)
+    #[clap(short = 'T', long, default_value = "0")]
+    pub threads: usize,
+}
+impl OutputBinseqInherited {
+    /// Opens the output, refusing a known BINSEQ extension that disagrees with `mode`.
+    pub fn as_writer(&self, mode: BinseqMode) -> Result<Box<dyn Write + Send>> {
+        if let Some(path) = self.output.as_deref() {
+            if let Ok(ext_mode) = BinseqMode::determine(path) {
+                if ext_mode != mode {
+                    bail!(
+                        "Output extension implies {ext_mode:?} but input is {mode:?}; the output always keeps the input's BINSEQ mode"
+                    );
+                }
+            }
+        }
+        if self.output.is_none() && !self.pipe {
+            bail!(
+                "Refusing to write binary BINSEQ data to stdout. Provide an output path with `-o/--output`, or pass `--pipe` to write to stdout explicitly."
+            );
+        }
+        match_output(self.output.as_deref())
+    }
+
+    pub fn threads(&self) -> usize {
+        match self.threads {
+            0 => num_cpus::get(),
+            n => n.min(num_cpus::get()),
+        }
     }
 }
 
@@ -459,7 +496,7 @@ impl From<OutputBinseqOptions> for BinseqConfig {
 mod tests {
     use clap::Parser;
 
-    use super::{OutputBinseq, OutputFile};
+    use super::{BinseqMode, OutputBinseq, OutputBinseqInherited, OutputFile};
     use crate::commands::CompressionType;
 
     fn compress_for(flags: &[&str]) -> CompressionType {
@@ -502,8 +539,8 @@ mod tests {
     /// refused rather than silently dumping binary into the terminal.
     #[test]
     fn test_as_writer_rejects_bare_stdout() {
-        let args = OutputBinseq::try_parse_from(["output"]).unwrap();
-        assert!(args.as_writer().is_err());
+        let args = OutputBinseqInherited::try_parse_from(["output"]).unwrap();
+        assert!(args.as_writer(BinseqMode::Cbq).is_err());
     }
 
     #[test]
@@ -519,15 +556,26 @@ mod tests {
 
     #[test]
     fn test_as_writer_allows_explicit_pipe() {
-        let args = OutputBinseq::try_parse_from(["output", "--pipe"]).unwrap();
-        assert!(args.as_writer().is_ok());
+        let args = OutputBinseqInherited::try_parse_from(["output", "--pipe"]).unwrap();
+        assert!(args.as_writer(BinseqMode::Cbq).is_ok());
     }
 
     #[test]
     fn test_as_writer_allows_output_path() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let args =
-            OutputBinseq::try_parse_from(["output", "-o", tmp.path().to_str().unwrap()]).unwrap();
-        assert!(args.as_writer().is_ok());
+            OutputBinseqInherited::try_parse_from(["output", "-o", tmp.path().to_str().unwrap()])
+                .unwrap();
+        assert!(args.as_writer(BinseqMode::Cbq).is_ok());
+    }
+
+    #[test]
+    fn test_inherited_rejects_mismatched_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.bq");
+        let args = OutputBinseqInherited::try_parse_from(["output", "-o", path.to_str().unwrap()])
+            .unwrap();
+        assert!(args.as_writer(BinseqMode::Cbq).is_err());
+        assert!(args.as_writer(BinseqMode::Bq).is_ok());
     }
 }

@@ -1,6 +1,6 @@
 use clap::Parser;
 
-use super::{MultiInputBinseq, OutputBinseq};
+use super::{MultiInputBinseq, OutputBinseqInherited};
 
 #[derive(Parser, Debug)]
 /// Concatenate BINSEQ files.
@@ -9,5 +9,5 @@ pub struct CatCommand {
     pub input: MultiInputBinseq,
 
     #[clap(flatten)]
-    pub output: OutputBinseq,
+    pub output: OutputBinseqInherited,
 }

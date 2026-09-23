@@ -1,6 +1,6 @@
 use clap::Parser;
 
-use super::{InputBinseq, Mate, OutputBinseq};
+use super::{InputBinseq, Mate, OutputBinseqInherited};
 
 /// Reverse complement the sequences in a BINSEQ file.
 #[derive(Parser, Debug)]
@@ -9,7 +9,7 @@ pub struct RevcompCommand {
     pub input: InputBinseq,
 
     #[clap(flatten)]
-    pub output: OutputBinseq,
+    pub output: OutputBinseqInherited,
 
     /// Which mate(s) to reverse complement
     ///
