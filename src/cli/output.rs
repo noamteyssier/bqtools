@@ -32,8 +32,9 @@ pub struct OutputFile {
     #[clap(short, long, help = "Output file format")]
     pub format: Option<FileFormat>,
 
-    #[clap(short, long, help = "Compress output file", default_value = "u")]
-    pub compress: CompressionType,
+    /// Compress output file [default: inferred from the output extension, else uncompressed]
+    #[clap(short, long)]
+    pub compress: Option<CompressionType>,
 
     #[clap(
         short = 'T',
@@ -49,8 +50,12 @@ impl OutputFile {
         compress_passthrough(writer, self.compress(), self.threads())
     }
 
+    /// Explicit `-c` wins; otherwise compression is inferred from the output extension.
     #[allow(clippy::case_sensitive_file_extension_comparisons)]
     pub fn compress(&self) -> CompressionType {
+        if let Some(compress) = self.compress {
+            return compress;
+        }
         self.output
             .as_ref()
             .map_or(CompressionType::Uncompressed, |path| {
@@ -107,12 +112,13 @@ impl OutputFile {
         })?;
 
         // Construct the output file names
-        let r1_name = if let Some(ext) = self.compress.extension() {
+        let compress = self.compress();
+        let r1_name = if let Some(ext) = compress.extension() {
             format!("{}_R1.{}.{}", prefix, format.extension(), ext)
         } else {
             format!("{}_R1.{}", prefix, format.extension())
         };
-        let r2_name = if let Some(ext) = self.compress.extension() {
+        let r2_name = if let Some(ext) = compress.extension() {
             format!("{}_R2.{}.{}", prefix, format.extension(), ext)
         } else {
             format!("{}_R2.{}", prefix, format.extension())
@@ -123,8 +129,8 @@ impl OutputFile {
         let r2 = match_output(Some(&r2_name))?;
 
         // Compress the output files (if necessary)
-        let r1 = compress_passthrough(r1, self.compress, self.threads())?;
-        let r2 = compress_passthrough(r2, self.compress, self.threads())?;
+        let r1 = compress_passthrough(r1, compress, self.threads())?;
+        let r2 = compress_passthrough(r2, compress, self.threads())?;
 
         Ok((r1, r2))
     }
@@ -450,7 +456,44 @@ impl From<OutputBinseqOptions> for BinseqConfig {
 mod tests {
     use clap::Parser;
 
-    use super::OutputBinseq;
+    use super::{OutputBinseq, OutputFile};
+    use crate::commands::CompressionType;
+
+    fn compress_for(flags: &[&str]) -> CompressionType {
+        let mut argv = vec!["output"];
+        argv.extend_from_slice(flags);
+        OutputFile::try_parse_from(argv).unwrap().compress()
+    }
+
+    #[test]
+    fn test_compress_explicit_flag_wins() {
+        assert!(matches!(compress_for(&["-c", "g"]), CompressionType::Gzip));
+        assert!(matches!(
+            compress_for(&["-o", "x.fq", "-c", "z"]),
+            CompressionType::Zstd
+        ));
+        assert!(matches!(
+            compress_for(&["-o", "x.fq.gz", "-c", "u"]),
+            CompressionType::Uncompressed
+        ));
+    }
+
+    #[test]
+    fn test_compress_inferred_from_extension() {
+        assert!(matches!(
+            compress_for(&["-o", "x.fq.gz"]),
+            CompressionType::Gzip
+        ));
+        assert!(matches!(
+            compress_for(&["-o", "x.fq.zst"]),
+            CompressionType::Zstd
+        ));
+        assert!(matches!(
+            compress_for(&["-o", "x.fq"]),
+            CompressionType::Uncompressed
+        ));
+        assert!(matches!(compress_for(&[]), CompressionType::Uncompressed));
+    }
 
     /// Without `-o` or `--pipe`, writing binary BINSEQ data to stdout must be
     /// refused rather than silently dumping binary into the terminal.
