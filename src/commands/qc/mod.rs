@@ -35,7 +35,7 @@ pub fn run(args: &QcCommand) -> Result<()> {
 
     let mut proc = proc::QcProcessor::new(
         &args.qc.outdir,
-        QcConfig::from_opts(&args.qc),
+        QcConfig::from_opts(&args.qc, range.as_ref().map_or(0, |r| r.start)),
         args.input.path().to_string(),
         processed_records,
         paired,
@@ -123,6 +123,24 @@ mod tests {
             assert!(!summary.contains("### R2"), "mode={mode:?}");
         }
 
+        Ok(())
+    }
+
+    /// `--dup-sample-size` used to count from record 0 of the file, so a span
+    /// starting past it silently dropped the duplication report.
+    #[test]
+    fn test_qc_dup_sample_relative_to_span() -> Result<()> {
+        let fq = write_fastx().nrec(200).call()?;
+        let bq = NamedTempFile::with_suffix(".cbq")?;
+        encode(&[fq.path()], bq.path())?;
+
+        let outdir = tempdir()?;
+        run_qc(
+            bq.path(),
+            outdir.path(),
+            &["--span", "150..", "--dup-sample-size", "10"],
+        )?;
+        assert!(outdir.path().join("duplication_levels_R1.tsv").exists());
         Ok(())
     }
 
