@@ -29,14 +29,17 @@ fn get_builder(args: &RevcompCommand) -> Result<BinseqWriterBuilder> {
 
 pub fn run(args: &RevcompCommand) -> Result<()> {
     let reader = BinseqReader::new(args.input.path())?;
-    if !reader.is_paired() && args.mate != Mate::Both {
+    let mate = if !reader.is_paired() && args.mate != Mate::Both {
         warn!("Ignoring `--mate/-M` flag as only single channel found in file");
-    }
+        Mate::Both
+    } else {
+        args.mate
+    };
 
     let builder = get_builder(args)?;
     let ohandle = args.output.as_writer(args.input.mode()?)?;
     let writer = builder.build(ohandle)?;
-    let mut processor = RevCompProcessor::new(writer, args.mate)?;
+    let mut processor = RevCompProcessor::new(writer, mate)?;
 
     if let Some(mut span) = args.input.span {
         let num_records = reader.num_records()?;
@@ -194,6 +197,28 @@ mod tests {
             "expected reverse complement of {seq} in output: {content}"
         );
 
+        Ok(())
+    }
+
+    /// On single-end files `-M` is ignored: `-M 2` used to leave the read untouched.
+    #[test]
+    fn test_revcomp_single_end_ignores_mate() -> Result<()> {
+        let seq = "ACGTACGTGATTACAACGTACGT";
+        let in_tmp = NamedTempFile::with_suffix(".fastq")?;
+        std::fs::write(
+            in_tmp.path(),
+            format!("@read1\n{seq}\n+\n{}\n", "I".repeat(seq.len())),
+        )?;
+        let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
+        encode(in_tmp.path(), bq_tmp.path())?;
+
+        let rc_tmp = NamedTempFile::with_suffix(".cbq")?;
+        revcomp(bq_tmp.path(), rc_tmp.path(), &["-M", "2"])?;
+
+        let out_fa = NamedTempFile::with_suffix(".fasta")?;
+        decode_to_fasta(rc_tmp.path(), out_fa.path())?;
+        let content = std::fs::read_to_string(out_fa.path())?;
+        assert!(content.contains(&reverse_complement_str(seq)));
         Ok(())
     }
 
