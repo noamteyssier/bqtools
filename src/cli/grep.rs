@@ -63,6 +63,7 @@ pub struct GrepArgs {
     /// Conflicts with `--rc` (reverse complement is undefined for header text)
     /// and `--range` (which addresses sequence coordinates).
     #[clap(short = 'H', long, conflicts_with_all = ["rc", "range"])]
+    #[cfg_attr(feature = "fuzzy", clap(conflicts_with = "fuzzy"))]
     pub header: bool,
 
     /// Only count matches
@@ -188,7 +189,7 @@ pub struct FuzzyArgs {
     /// Note that regex expressions are not supported with this flag. All
     /// patterns within a given pattern set (primary/secondary/either) must
     /// have the same length; mismatched lengths are rejected with an error.
-    #[clap(short = 'z', long, conflicts_with_all = ["header", "fixed"])]
+    #[clap(short = 'z', long, conflicts_with = "fixed")]
     pub fuzzy: bool,
 
     /// Maximum edit distance to allow when fuzzy matching
