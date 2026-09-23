@@ -11,7 +11,7 @@ bqtools provides tools to encode, decode, manipulate, and analyze [BINSEQ](https
 It supports all BINSEQ variants (`*.bq`, `*.cbq`, `*.vbq`) and makes use of the [`binseq`](https://crates.io/crates/binseq) library.
 
 BINSEQ is a binary file format family designed for high-performance processing of DNA sequences.
-It currently has two variants: BQ and VBQ.
+It currently has three variants: BQ, VBQ, and CBQ.
 
 - **BQ (\*.bq)**: Optimized for _fixed-length_ DNA sequences **without** quality scores (2bit/4bit).
 - **VBQ (\*.vbq)**: Optimized for _variable-length_ DNA sequences **with optional** quality scores, headers with 2bit/4bit.
@@ -38,15 +38,17 @@ It is the _fastest_ variant but _is lossy_ by design.
 
 ## Features
 
-- **Encode**: Convert FASTA or FASTQ files to a BINSEQ format
+- **Encode**: Convert FASTA, FASTQ, or SAM/BAM/CRAM files to a BINSEQ format
 - **Decode**: Convert a BINSEQ file back to FASTA, FASTQ, or TSV format
 - **Cat**: Concatenate multiple BINSEQ files
-- **Info**: Show information and statistics about a BINSEQ file.
+- **Info**: Show information and statistics about one or more BINSEQ files.
 - **Grep**: Search for fixed-string, regex, or fuzzy matches in BINSEQ files.
+- **Sample**: Randomly subsample a BINSEQ file to FASTA, FASTQ, or TSV.
 - **Split**: Split a BINSEQ file into multiple files based on matching patterns.
 - **Pipe**: Create named-pipes for efficient data processing with legacy tools that don't support BINSEQ, optionally spawning and supervising the consumer commands directly (`-x`/`-X`).
 - **Revcomp**: Reverse complement the sequences in a BINSEQ file.
 - **Verify**: Compute an order-independent checksum over a BINSEQ file.
+- **QC**: Run FastQC-style quality control on a BINSEQ file.
 
 ## Installation
 
@@ -80,13 +82,13 @@ bqtools supports the following feature flags:
 
 - `htslib`: Enable support for reading SAM/BAM/CRAM files using the [`htslib`](https://docs.rs/rust-htslib/latest/rust_htslib/) library (default).
 - `gcs`: Enable support for reading Google Cloud Storage files.
-- `fuzzy`: Enable fuzzy matching in the `grep` command using the [`sassy`](https://crates.io/crates/sassy) library
+- `fuzzy`: Enable fuzzy matching in the `grep` and `split` commands using the [`sassy`](https://crates.io/crates/sassy) library
 
 To enable fuzzy matching, `bqtools` must be compiled using a `native` target cpu:
 
 ```bash
 # Install from source
-cargo install --path . -F fuzzy;
+export RUSTFLAGS="-C target-cpu=native"; cargo install --path . -F fuzzy;
 
 # Or install from crates but enforce native target cpu
 export RUSTFLAGS="-C target-cpu=native"; cargo install bqtools -F fuzzy;
@@ -98,7 +100,7 @@ To selectively enable/disable feature flags:
 # (for fuzzy matching support sassy requires native target cpu)
 export RUSTFLAGS="-C target-cpu=native";
 
-# Install bqtools without htslib/gcs but with fuzzy matching
+# Install bqtools without htslib but with fuzzy matching
 cargo install bqtools --no-default-features -F fuzzy
 #
 # Install bqtools without htslib but with fuzzy matching and gcs
@@ -117,6 +119,7 @@ bqtools decode --help
 bqtools cat --help
 bqtools info --help
 bqtools grep --help
+bqtools sample --help
 bqtools split --help
 bqtools pipe --help
 bqtools qc --help
@@ -151,11 +154,20 @@ bqtools encode input_R1.fastq input_R2.fastq -o output.bq
 # Encode paired-end reads to vbq
 bqtools encode input_R1.fastq input_R2.fastq -o output.vbq
 
-# Encode a SAM/BAM/CRAM file to BINSEQ
-bqtools encode input.bam -fb -o output.bq
+# Encode a SAM/BAM/CRAM file to BINSEQ (detected from the extension)
+bqtools encode input.bam -o output.bq
 
-# Encode an paired-end CRAM file to BINSEQ (sorted by read name)
-bqtools encode input.paired.cram -I -fb -o output.vbq
+# Encode a SAM/BAM/CRAM stream (use -fb when the format can't be detected)
+samtools view -b input.bam | bqtools encode -fb -o output.cbq
+
+# Encode a paired-end CRAM file to BINSEQ (sorted by read name)
+bqtools encode input.paired.cram -I -o output.vbq
+
+# Without -o, the output is named after the input (here: input.cbq)
+bqtools encode input_R1.fastq input_R2.fastq
+
+# Write BINSEQ to stdout
+bqtools encode input.fastq --pipe | ...
 
 # Specify a policy for handling non-ATCG nucleotides (2-bit only)
 bqtools encode input.fastq -o output.bq -p r  # Randomly draw A/C/G/T for each N
@@ -163,13 +175,16 @@ bqtools encode input.fastq -o output.bq -p r  # Randomly draw A/C/G/T for each N
 # Set threads for parallel processing
 bqtools encode input.fastq -o output.bq -T 4
 
-# Include sequencing headers in the encoding (unused by .bq)
+# Exclude sequence headers from the encoding (headers are never stored in .bq)
 bqtools encode input.fastq -o output.vbq -H
 
 # Encode with ARCHIVE mode (useful for genomes, cDNA libraries, and larger sequences)
-# where there are common Ns, large sequence sizes, and headers are important
+# where there are common Ns, large sequence sizes, and headers are important.
+# Archive mode doesn't change the BINSEQ mode, so pair it with a .vbq output (or -m vbq).
 bqtools encode input.fasta -o output.vbq -A
 ```
+
+The BINSEQ mode is taken from `-m/--mode`, otherwise from the `-o` extension, and defaults to `cbq`.
 
 Available policies for handling non-ATCG nucleotides:
 
@@ -181,7 +196,7 @@ Available policies for handling non-ATCG nucleotides:
 - `g`: Set all Ns to G
 - `t`: Set all Ns to T
 
-> Note: These are only applied when encoding with 2-bit.
+> Note: These are only applied when encoding bq/vbq with 2-bit; cbq stores Ns directly.
 
 ### Encoding multiple files at the same time
 
@@ -191,6 +206,9 @@ However, file-level parallelism is still possible.
 
 `bqtools` will automatically find the pairs in the input files and respect pairing if the `--paired` flag is used.
 To encode everything into a single BINSEQ file you can use the `--collate` flag.
+
+Explicitly listed files must match `*.{fastq,fq,fasta,fa}[.gz|.zst]` (and `_R1`/`_R2` with `--paired`); others are skipped with a warning.
+Note that exactly two input files are treated as a single R1/R2 pair, so a glob that happens to match two files encodes one paired file.
 
 ```bash
 # encodes all FASTX files into separate BINSEQ files
@@ -204,6 +222,9 @@ bqtools encode /path/to/fastx/*.fastq.gz -o some.vbq --collate
 
 # encodes all FASTX files into a single paired-BINSEQ file
 bqtools encode /path/to/fastx/*.fastq.gz -o some.vbq --collate --paired
+
+# encodes every file listed (one path per line) in a manifest
+bqtools encode --manifest files.txt --paired
 ```
 
 #### Recursive Encoding
@@ -214,6 +235,7 @@ You might have a directory or nested subdirectories with multiple FASTX files or
 It will then balance the provided file/file pairs among the thread pool to ensure efficient parallel encoding.
 
 All options provided by `bqtools encode` will be passed through to the sub-encoders.
+The exceptions are `-o`, which only applies when there is a single output (e.g. with `--collate`), and `--pipe`, which is not supported for batch encoding.
 
 ```bash
 # Encode all FASTX files as CBQ
@@ -228,11 +250,15 @@ bqtools encode --recursive --mode bq --depth 2 ./
 
 ### Decoding
 
-Convert BINSEQ files back to FASTA/FASTQ/TSV:
+Convert BINSEQ files back to FASTA/FASTQ/TSV.
+The format is inferred from the `-o` extension (or set with `-f`), and defaults to TSV when writing to stdout:
 
 ```bash
-# Decode to FASTQ (default)
+# Decode to FASTQ (format inferred from the extension)
 bqtools decode input.bq -o output.fastq
+
+# Decode to stdout as FASTQ (stdout defaults to TSV)
+bqtools decode input.bq -f q
 
 # Decode to compressed FASTQ (gzip/zstd)
 bqtools decode input.bq -o output.fastq.gz
@@ -242,15 +268,22 @@ bqtools decode input.bq -o output.fastq.zst
 bqtools decode input.bq -o output.fa -f a
 
 # Decode paired-end reads into separate files
-bqtools decode input.bq --prefix output
-# Creates output_R1.fastq and output_R2.fastq
+bqtools decode input.bq --prefix output -f q
+# Creates output_R1.fq and output_R2.fq
+
+# ... gzip-compressed
+bqtools decode input.bq --prefix output -f q -c g
+# Creates output_R1.fq.gz and output_R2.fq.gz
 
 # Specify which read of a pair to output
 bqtools decode input.bq -o output.fastq -m 1  # Only first read
 bqtools decode input.bq -o output.fastq -m 2  # Only second read
 
-# Specify output format
-bqtools decode input.bq -o output.tsv -f t  # TSV format
+# Only decode records 1000..2000 (0-based, end-exclusive)
+bqtools decode input.bq -o output.fastq --span 1000..2000
+
+# Set threads for parallel processing
+bqtools decode input.bq -o output.fastq -T 4
 ```
 
 ### Concatenating
@@ -261,12 +294,16 @@ Combine multiple BINSEQ files:
 bqtools cat file1.bq file2.bq file3.bq -o combined.bq
 ```
 
+All inputs must be the same BINSEQ variant with identical headers (e.g. same bitsize and flags); the output inherits those settings.
+For vbq/cbq, records are re-encoded in parallel, so record order is not preserved.
+
 > Note: `cat`, `revcomp`, and other commands that write BINSEQ output require either `-o/--output`
 > or an explicit `--pipe` flag; binary BINSEQ data is never written to stdout implicitly.
 
 ### Reverse Complementing
 
-Reverse complement the sequences in a BINSEQ file, preserving its format and configuration:
+Reverse complement the sequences in a BINSEQ file, preserving its format and configuration
+(so the output extension must match the input's). Record order is not preserved:
 
 ```bash
 bqtools revcomp input.cbq -o output.cbq
@@ -285,23 +322,26 @@ bqtools revcomp input.cbq -o output.cbq -M 2
 
 ### Information and Statistics
 
-Show information and statistics about a BINSEQ file.
+Show information and statistics about one or more BINSEQ files.
 
 ```bash
 bqtools info input.cbq
 
-# print out the VBQ index
+# print only the record count of each file ("<count>\t<path>")
+bqtools info *.cbq --num
+
+# print out the block index (VBQ/CBQ)
 bqtools info input.vbq --show-index
 
-# print out the CBQ block headers
+# print out the CBQ block headers (CBQ only)
 bqtools info input.cbq --show-headers
 
 # export as json
 bqtools info input.cbq --json
 ```
 
-> Note: using `info` without the `--json` flag will format the number of records to include underscores to delimit the thousands.
-> To avoid this behavior or to pass raw numerical values forward use the `--json` flag.
+> Note: the default tabular output formats the number of records with underscores to delimit the thousands.
+> To pass raw numerical values forward use `--num` or `--json`.
 
 ### Verify
 
@@ -315,16 +355,22 @@ resulting checksum is identical regardless of record order.
 bqtools verify input.cbq
 ```
 
-This prints a tab-separated `<checksum>  <num_records>  <path>`, so two files (or two encode
-runs of the same input) can be confirmed to carry the same data - even if a parallel encoder
-wrote them in different record orders - by comparing checksums:
+This prints a tab-separated `<checksum>\t<num_records>\t<path>` (a 16-hex-digit checksum), so two
+files can be confirmed to carry the same data - even if a parallel encoder wrote them in different
+record orders - by comparing checksums:
 
 ```bash
 bqtools verify original.cbq
 bqtools verify reencoded.cbq
 ```
 
-By default the checksum covers sequence, quality, headers, and the record flag. Use the
+Two encodes of the same input only match if the encoding is deterministic: bq/vbq replace `N`
+with a random base under the default policy (use `-p a` when encoding), and bq never stores
+headers. `--span` selects records by file position, so a span is not order-independent.
+
+By default the checksum covers sequence, quality, headers, and the record flag. Headers are
+automatically excluded (with a warning) for files that don't store them, such as all bq files,
+and files written by `bqtools encode` carry no record flags. Use the
 `--skip-*` flags to exclude fields you don't care about (e.g. to ignore header differences
 introduced by a re-encode):
 
@@ -339,6 +385,9 @@ to a single mate:
 ```bash
 bqtools verify input.cbq -M 1
 ```
+
+`-M 2` errors on single-end files. Other options include `--skip-seq`, `--span`, and `-T/--threads`
+(see `bqtools verify --help`).
 
 Export the checksum report (including the field list, mate, and algorithm) as JSON with `--json`:
 
@@ -355,6 +404,9 @@ You can easily search for specific subsequences or regular expressions within BI
 
 By default the multiple pattern logic is AND (i.e. all patterns must match).
 The logic can be changed to OR (i.e. any pattern must match) with the `--or-logic` option.
+
+Matching records are written to stdout as TSV by default (colorized when writing to a terminal; see `--color`),
+or in the format inferred from `-o`. For paired files, `-m 1`/`-m 2` restricts both the output and all patterns to that mate.
 
 ```bash
 # See full options list
@@ -375,15 +427,17 @@ bqtools grep input.bq "ACGT[AG]TCCA" "AG(TTTT|CCCC)A"
 # Search for multiple regular expressions (OR-logic)
 bqtools grep input.bq "ACGT[AG]TCCA" "AG(TTTT|CCCC)A" --or-logic
 
-# Only search for patterns within a specified range per sequence (basepairs 30-80)
+# Only search for patterns within a specified range per sequence (0-based, end-exclusive: bases 30..80)
 bqtools grep input.bq "ACGT[AG]TCCA" --range 30..80
 
-# Only search for patterns within a specified range per sequence (basepairs 0-80)
+# Only search for patterns within a specified range per sequence (bases 0..80)
 bqtools grep input.bq "ACGT[AG]TCCA" --range ..80
 
-# Only search for patterns within a specified range per sequence (basepairs 80-max)
+# Only search for patterns within a specified range per sequence (base 80 to the end)
 bqtools grep input.bq "ACGT[AG]TCCA" --range 80..
 ```
+
+Range bounds past the end of a sequence are clamped to its length.
 
 Patterns can be reverse complemented before matching with `--rc`. This only supports fixed ACGT
 patterns (from CLI arguments or pattern files) — regex patterns are rejected since reverse
@@ -420,7 +474,7 @@ bqtools grep input.bq "ACGTACGT" -z
 # Run fuzzy matching with an edit distance of 2
 bqtools grep input.bq "ACGTACGT" -z -k2
 
-# Run fuzzy matching but only write inexact matches
+# Run fuzzy matching but ignore exact (0-edit) hits
 bqtools grep input.bq "ACGTACGT" -zi
 ```
 
@@ -443,8 +497,8 @@ Notably this will match _solely_ with OR logic.
 This can be used also with fuzzy matching as well as with pattern counting described below.
 Regex is also fully supported and files can be additionally paired with CLI arguments.
 
-If your patterns are all fixed strings (and not regex), you can improve performance by using the `-x/--fixed` flag.
-This will use the more efficient [Aho-Corasick algorithm](https://en.wikipedia.org/wiki/Aho%E2%80%93Corasick_algorithm) to match patterns.
+Patterns that are all uppercase `ACGT` are automatically matched with the more efficient [Aho-Corasick algorithm](https://en.wikipedia.org/wiki/Aho%E2%80%93Corasick_algorithm).
+For other literal patterns (e.g. lowercase or header text) use the `-x/--fixed` flag. `-x` is ignored under the default AND logic with multiple CLI patterns.
 
 ```bash
 # Run grep with patterns from a plain text file (one pattern per line)
@@ -474,6 +528,7 @@ bqtools grep input.bq "ACGTACGT" -F
 ```
 
 The output of `--frac` is a TSV with three columns: [Count, Total, Fraction]
+Counting modes (`-C`, `-F`, `-P`) never write records, so they can't be combined with `-o`/`-p`.
 
 `bqtools` also introduces a new feature for the counting the occurrences of individual patterns.
 This is useful for seeing how many times each pattern occurs across a sequencing dataset without having to iterate over the dataset multiple times using traditional methods.
@@ -487,8 +542,7 @@ Some important notes are:
 5. Invert is supported for counting patterns and will return the number of records a pattern does not occur in.
 6. `--header` is supported and counts matches against the record header instead of the sequence.
 
-If your patterns are all fixed strings (and not regex), you can improve performance by using the `-x/--fixed` flag.
-This will use the more efficient [Aho-Corasick algorithm](https://en.wikipedia.org/wiki/Aho%E2%80%93Corasick_algorithm) to match patterns.
+As with matching, uppercase `ACGT` patterns automatically use Aho-Corasick, and `-x/--fixed` forces it for other literal patterns.
 
 The throughput gains for this can be massive for pattern counting, especially when dealing with high numbers of patterns.
 
@@ -517,6 +571,23 @@ When patterns are loaded from a FASTA or TSV file, the header/alias is used as t
 bqtools grep input.bq --file patterns.fa -P
 ```
 
+### Sample
+
+Randomly subsample a BINSEQ file. Each record is kept independently with probability `-F`, so the
+output size is approximate. The same `-S/--seed` selects the same records regardless of thread count.
+Output options are the same as `decode` (TSV on stdout by default).
+
+```bash
+# Keep ~10% of reads
+bqtools sample input.cbq -F 0.1 -o subset.fastq.gz
+
+# Reproducible subsample with a fixed seed
+bqtools sample input.cbq -F 0.1 -S 7 -o subset.fq
+
+# Paired input into separate R1/R2 files (subset_R1.fq / subset_R2.fq)
+bqtools sample input.cbq -F 0.5 --prefix subset -f q
+```
+
 ### Split
 
 Split a BINSEQ file into separate files based on which pattern each record matches.
@@ -525,7 +596,10 @@ Patterns are provided through the same pattern files as `grep` (plain text, FAST
 Each output file is named after the pattern alias, and records matching no pattern are written to an `unmatched` file.
 A record is only written when it matches exactly one alias; ambiguous records (matching multiple aliases) are treated as unmatched.
 
-Like `grep`, the backend is auto-selected: fixed-string patterns use Aho-Corasick (or force with `-x/--fixed`), regex patterns use the regex backend, and `-z/--fuzzy` enables fuzzy matching.
+Like `grep`, the backend is auto-selected: fixed-string patterns use Aho-Corasick (or force with `-x/--fixed`), regex patterns use the regex backend, and `-z/--fuzzy` enables fuzzy matching (requires the `fuzzy` feature flag).
+
+Outputs are written to `./split_outs` by default and keep the input's BINSEQ mode.
+The unmatched file can be renamed with `--unmatched-basename`, and `--span` restricts splitting to a range of records.
 
 Like `grep`, patterns can be reverse complemented before matching with `--rc`. This only supports
 fixed ACGT patterns — regex patterns are rejected since reverse complementing a regex is undefined.
@@ -539,7 +613,7 @@ bqtools split --help
 bqtools split input.cbq --file patterns.tsv
 
 # Write outputs to a specific directory
-bqtools split input.cbq --file patterns.tsv --basepath ./split_outs
+bqtools split input.cbq --file patterns.tsv --basepath ./by_sample
 
 # Split on primary or extended sequence patterns
 bqtools split input.cbq --sfile primary.fa
@@ -548,7 +622,7 @@ bqtools split input.cbq --xfile extended.fa
 # Force fixed-string (Aho-Corasick) matching
 bqtools split input.cbq --file patterns.tsv -x
 
-# Split with fuzzy matching (edit distance of 2)
+# Split with fuzzy matching (edit distance of 2; requires -F fuzzy)
 bqtools split input.cbq --file patterns.fa -z -k2
 
 # Skip writing the unmatched file
@@ -579,14 +653,17 @@ enabling parallel processing with tools that expect FASTQ/FASTA files.
 
 Importantly, if your tool supports multiple parallel threads (i.e. parallelizes input files), you can make use of this feature to significantly improve performance.
 
+`-p` counts FIFOs: single-end input gets `p` pipes, while paired input gets `p/2` R1/R2 pairs.
+It defaults to the CPU count and is capped at it. FIFOs are written as FASTQ unless `-f a` is given.
+
 ```bash
-# Create 4 named pipes (8 files for paired-end data, 4 files for single-end data)
-# Pipes (single): fifo_[1234].fq
-# Pipes (paired): fifo_[0123]_R[12].fq
+# Create 4 named pipes (4 FIFOs for single-end data, 2 R1/R2 pairs for paired-end data)
+# Pipes (single): fifo_[0123].fq
+# Pipes (paired): fifo_[01]_R[12].fq
 bqtools pipe input.vbq -p 4 -b fifo &
 
-# Process in parallel with tools that don't support BINSEQ
-ls fifo_*.fq | xargs -P 4 -I {} sh -c 'legacy-tool {} > {.}.out'
+# Process in parallel with tools that don't support BINSEQ (single-end)
+ls fifo_*.fq | xargs -P 4 -I {} sh -c 'legacy-tool "$1" > "${1%.fq}.out"' _ {}
 ```
 
 #### Executing commands automatically
@@ -641,6 +718,7 @@ Notes:
   leaving an unread FIFO open.
 - `bqtools pipe` exits non-zero if any spawned command exits non-zero.
 - `{n}` only applies to `-x`; it has no meaning in `-X` (a single invocation).
+- Commands run via `sh -c`.
 
 **Key features:**
 
@@ -672,12 +750,12 @@ bqtools qc input.cbq --span 0..100000
 # Skip specific modules
 bqtools qc input.cbq --skip-dup-levels --skip-overrepresented
 
-# Set the number of leading records sampled for duplication-level and
-# overrepresented-sequence estimation (0 uses all records)
+# Set the number of leading records (of the span) sampled for duplication-level
+# and overrepresented-sequence estimation (0 uses all records)
 bqtools qc input.cbq --dup-sample-size 50000
 
-# Set the minimum percentage of sampled reads a sequence must represent
-# to be flagged as overrepresented
+# Set the minimum percentage (0-100) of sampled reads a sequence must represent
+# to be flagged as overrepresented (default 0.1, i.e. 0.1%)
 bqtools qc input.cbq --overrepresented-threshold 0.5
 
 # Set threads for parallel processing
@@ -696,15 +774,16 @@ Modules (each toggled off independently with a `--skip-*` flag):
 
 Output directory contents:
 
-- `summary.md` — overview table (read/pair counts) and a headline section per
-  enabled module
+- `summary.md` — overview table (input path, record count, and paired flag) and a
+  headline section per enabled module
 - `base_quality_R1.tsv` / `base_quality_R2.tsv`
 - `seq_quality_R1.tsv` / `seq_quality_R2.tsv`
 - `base_content_R1.tsv` / `base_content_R2.tsv`
 - `gc_content_R1.tsv` / `gc_content_R2.tsv`
 - `seq_length_R1.tsv` / `seq_length_R2.tsv`
 - `duplication_levels_R1.tsv` / `duplication_levels_R2.tsv`
-- `overrepresented_sequences_R1.tsv` / `overrepresented_sequences_R2.tsv`
+- `overrepresented_sequences_R1.tsv` / `overrepresented_sequences_R2.tsv` (only written if any
+  sequence meets the threshold)
 
 For paired-end input, each module writes separate `_R1`/`_R2` files and the
 summary report splits its section into `### R1`/`### R2` subsections;
