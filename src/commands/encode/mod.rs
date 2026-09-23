@@ -331,7 +331,9 @@ fn run_manifest(args: &EncodeCommand) -> Result<()> {
 
     let handle = File::open(manifest).map(BufReader::new)?;
     let lines = handle.lines().collect::<Result<Vec<_>, _>>()?;
+    let num_lines = lines.len();
     let file_queue = filter_valid_paths(lines.into_iter().map(PathBuf::from), &regex)?;
+    warn_skipped(num_lines, file_queue.len());
 
     process_file_list(args, file_queue)
 }
@@ -340,11 +342,25 @@ fn run_manifest_inline(args: &EncodeCommand) -> Result<()> {
     let regex = build_file_regex(args.input.batch_encoding_options.paired)?;
 
     let file_queue = filter_valid_paths(args.input.input.iter().map(PathBuf::from), &regex)?;
+    warn_skipped(args.input.num_files(), file_queue.len());
 
     process_file_list(args, file_queue)
 }
 
+/// Explicitly listed inputs that fail the extension (or `_R1/_R2`) filter are dropped.
+fn warn_skipped(num_given: usize, num_kept: usize) {
+    if num_kept < num_given {
+        warn!(
+            "Skipping {} input path(s) not matching *.{{fastq,fq,fasta,fa}}[.gz|.zst] (with _R1/_R2 if --paired)",
+            num_given - num_kept
+        );
+    }
+}
+
 pub fn run(args: &EncodeCommand) -> Result<()> {
+    if args.input.format() == Some(FileFormat::Tsv) {
+        bail!("TSV is not a supported input format for encode");
+    }
     if args.input.recursive {
         trace!("launching encode-recursive");
         run_recursive(args)

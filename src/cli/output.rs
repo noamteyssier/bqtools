@@ -1,7 +1,9 @@
 use anyhow::{bail, Result};
 use binseq::{BitSize, Policy};
-use clap::{Parser, ValueEnum};
-use log::warn;
+use clap::{
+    builder::{PossibleValuesParser, TypedValueParser},
+    Parser, ValueEnum,
+};
 use std::{io::Write, path::Path};
 
 use crate::{
@@ -160,7 +162,7 @@ pub struct OutputBinseq {
     pub options: OutputBinseqOptions,
 
     /// Pipe the output to stdout
-    #[clap(long)]
+    #[clap(long, conflicts_with = "output")]
     pub pipe: bool,
 }
 impl OutputBinseq {
@@ -206,7 +208,7 @@ pub struct OutputBinseqOptions {
     /// Encoding bitsize (2 or 4 bits per nucleotide)
     ///
     /// Used by bq+vbq
-    #[clap(short = 'S', long, default_value = "2")]
+    #[clap(short = 'S', long, default_value = "2", value_parser = parse_bitsize())]
     bitsize: u8,
 
     /// Exclude sequence names (headers) in the binseq file
@@ -304,13 +306,10 @@ impl OutputBinseqOptions {
         if self.archive {
             BitSize::Four
         } else {
+            // `parse_bitsize` restricts the value to 2 or 4
             match self.bitsize {
-                2 => BitSize::Two,
                 4 => BitSize::Four,
-                _ => {
-                    warn!("Invalid provided bitsize - defaulting to 2");
-                    BitSize::Two
-                }
+                _ => BitSize::Two,
             }
         }
     }
@@ -408,6 +407,10 @@ impl From<BinseqMode> for binseq::write::Format {
     }
 }
 
+fn parse_bitsize() -> impl TypedValueParser<Value = u8> {
+    PossibleValuesParser::new(["2", "4"]).map(|s| s.parse::<u8>().unwrap())
+}
+
 fn parse_memory_size(input: &str) -> Result<usize, String> {
     let input = input.trim().to_uppercase();
     let last_char = input.chars().last().unwrap_or('0');
@@ -501,6 +504,17 @@ mod tests {
     fn test_as_writer_rejects_bare_stdout() {
         let args = OutputBinseq::try_parse_from(["output"]).unwrap();
         assert!(args.as_writer().is_err());
+    }
+
+    #[test]
+    fn test_pipe_conflicts_with_output() {
+        assert!(OutputBinseq::try_parse_from(["output", "--pipe", "-o", "x.cbq"]).is_err());
+    }
+
+    #[test]
+    fn test_bitsize_rejects_invalid_values() {
+        assert!(OutputBinseq::try_parse_from(["output", "-S", "3"]).is_err());
+        assert!(OutputBinseq::try_parse_from(["output", "-S", "4"]).is_ok());
     }
 
     #[test]
