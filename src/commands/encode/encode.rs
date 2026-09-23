@@ -130,6 +130,7 @@ pub fn encode_htslib(
     let ohandle = match_output(opath)?;
     let mut builder = BinseqWriterBuilder::new(mode.into())
         .block_size(config.block_size)
+        .compression(config.compress)
         .compression_level(config.compression_level)
         .headers(config.headers)
         .quality(config.quality)

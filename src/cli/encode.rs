@@ -77,6 +77,14 @@ mod tests {
         assert_eq!(path.as_deref(), Some("sample.cbq"));
     }
 
+    /// `-I` used to be silently ignored when two files were given (implicit pairing won).
+    #[test]
+    fn test_interleaved_two_files_not_paired() {
+        let cmd = EncodeCommand::try_parse_from(["encode", "a.fq", "b.fq", "-I"]).unwrap();
+        assert!(!cmd.input.paired());
+        assert!(cmd.output_path().is_err(), "two interleaved files need -o");
+    }
+
     #[test]
     fn test_recursive_requires_single_directory() {
         let cmd = EncodeCommand::try_parse_from(["encode", "-r"]).unwrap();
