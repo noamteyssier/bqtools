@@ -8,10 +8,7 @@ use clap::Parser;
 use log::trace;
 use paraseq::{fasta, ReaderBuilder, Record};
 
-use crate::{
-    cli::FileFormat,
-    commands::grep::{Pattern, PatternCollection, SimpleRange},
-};
+use crate::commands::grep::{Pattern, PatternCollection, SimpleRange};
 
 use super::{InputBinseq, OutputFile};
 
@@ -34,14 +31,9 @@ impl GrepCommand {
             // that colorized output highlights.
             return false;
         }
-        match self.output.format() {
-            Ok(FileFormat::Bam) => false,
-            _ => {
-                self.output.output.is_none()
-                    && self.output.prefix.is_none()
-                    && self.grep.color.should_color()
-            }
-        }
+        self.output.output.is_none()
+            && self.output.prefix.is_none()
+            && self.grep.color.should_color()
     }
 }
 
@@ -74,14 +66,14 @@ pub struct GrepArgs {
     pub header: bool,
 
     /// Only count matches
-    #[clap(short = 'C', long, conflicts_with = "pattern_count")]
+    #[clap(short = 'C', long, conflicts_with_all = ["pattern_count", "output", "prefix"])]
     pub count: bool,
 
     /// Show match count as a fraction of total records
     ///
     /// Implies --count (-C). Displays the number of matches,
     /// total records, and the fraction of records matching.
-    #[clap(short = 'F', long, conflicts_with = "pattern_count")]
+    #[clap(short = 'F', long, conflicts_with_all = ["pattern_count", "output", "prefix"])]
     pub frac: bool,
 
     /// Only match patterns that are within this range.
@@ -98,7 +90,7 @@ pub struct GrepArgs {
     /// This will output a TSV with the number of matches per pattern.
     /// Note that a sequence may contribute to multiple patterns counts.
     /// A pattern will also only be counted once per sequence.
-    #[clap(short = 'P', long, conflicts_with = "count")]
+    #[clap(short = 'P', long, conflicts_with_all = ["count", "output", "prefix"])]
     pub pattern_count: bool,
 
     /// Denotes patterns are fixed strings (non-regex)
@@ -127,12 +119,7 @@ pub struct GrepArgs {
     or_logic: bool,
 
     /// Colorize output (auto, always, never)
-    #[clap(
-        long,
-        value_name = "WHEN",
-        default_value = "auto",
-        conflicts_with = "format"
-    )]
+    #[clap(long, value_name = "WHEN", default_value = "auto")]
     color: ColorWhen,
 
     #[cfg(feature = "fuzzy")]
@@ -201,19 +188,19 @@ pub struct FuzzyArgs {
     /// Note that regex expressions are not supported with this flag. All
     /// patterns within a given pattern set (primary/secondary/either) must
     /// have the same length; mismatched lengths are rejected with an error.
-    #[clap(short = 'z', long)]
+    #[clap(short = 'z', long, conflicts_with_all = ["header", "fixed"])]
     pub fuzzy: bool,
 
     /// Maximum edit distance to allow when fuzzy matching
     ///
     /// Only used with fuzzy matching
-    #[clap(short = 'k', long, default_value = "1")]
+    #[clap(short = 'k', long, default_value = "1", requires = "fuzzy")]
     pub distance: usize,
 
     /// Only return inexact matches on fuzzy matching
     ///
     /// This will capture matches that are not exact, but are within the specified edit distance.
-    #[clap(short = 'i', long)]
+    #[clap(short = 'i', long, requires = "fuzzy")]
     pub inexact: bool,
 
     /// Maximum fraction of `N` bases allowed within a fuzzy match
@@ -223,7 +210,7 @@ pub struct FuzzyArgs {
     /// pattern lengths may differ. Set explicitly to override, e.g. `0.0` to
     /// reject any `N` in a match, or `1.0` to disable the filter entirely.
     /// Must be between `0.0` and `1.0` (inclusive).
-    #[clap(long, value_parser = parse_max_n_frac)]
+    #[clap(long, value_parser = parse_max_n_frac, requires = "fuzzy")]
     pub max_n_frac: Option<f32>,
 }
 

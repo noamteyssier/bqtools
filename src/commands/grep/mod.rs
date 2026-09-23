@@ -69,11 +69,15 @@ fn redistribute_patterns(
     Ok(())
 }
 
-fn load_patterns(args: &GrepCommand) -> Result<AllPatterns> {
+fn load_patterns(args: &GrepCommand, paired: bool) -> Result<AllPatterns> {
     let mut pat1 = args.grep.patterns_m1()?;
     let mut pat2 = args.grep.patterns_m2()?;
     let mut pat = args.grep.patterns()?;
-    redistribute_patterns(&mut pat1, &mut pat2, &mut pat, args.output.mate)?;
+    // `--mate` is meaningless on single-end files (and `-m 2` would route every
+    // pattern to the empty extended sequence).
+    if paired {
+        redistribute_patterns(&mut pat1, &mut pat2, &mut pat, args.output.mate)?;
+    }
     if args.grep.rc {
         pat1.reverse_complement()?;
         pat2.reverse_complement()?;
@@ -100,10 +104,10 @@ impl AllPatterns {
     }
 }
 
-fn build_counter(args: &GrepCommand) -> Result<PatternCounter> {
+fn build_counter(args: &GrepCommand, paired: bool) -> Result<PatternCounter> {
     #[cfg(feature = "fuzzy")]
     if args.grep.fuzzy_args.fuzzy {
-        let patterns = load_patterns(args)?;
+        let patterns = load_patterns(args, paired)?;
         let counter = FuzzyPatternCounter::new(
             patterns.pat1,
             patterns.pat2,
@@ -116,7 +120,7 @@ fn build_counter(args: &GrepCommand) -> Result<PatternCounter> {
         return Ok(PatternCounter::Fuzzy(Box::new(counter)));
     }
 
-    let patterns = load_patterns(args)?;
+    let patterns = load_patterns(args, paired)?;
     let use_fixed = args.grep.fixed || patterns.are_fixed();
     if !args.grep.fixed && use_fixed {
         log::debug!("All patterns are fixed strings — auto-selecting Aho-Corasick");
@@ -139,7 +143,7 @@ fn build_counter(args: &GrepCommand) -> Result<PatternCounter> {
 }
 
 fn run_pattern_count(args: &GrepCommand, reader: BinseqReader) -> Result<()> {
-    let counter = build_counter(args)?;
+    let counter = build_counter(args, reader.is_paired())?;
     let pattern_names = counter.pattern_names();
     let proc =
         PatternCountProcessor::new(counter, args.grep.range, args.grep.header, pattern_names);
@@ -162,10 +166,10 @@ fn run_pattern_count(args: &GrepCommand, reader: BinseqReader) -> Result<()> {
 /// a single pattern AND logic is downgraded to OR — this keeps Aho-Corasick
 /// eligible (it doesn't implement AND) and matches the returned matcher to
 /// the logic value callers must pass alongside it.
-fn build_matcher(args: &GrepCommand) -> Result<(PatternMatcher, bool)> {
+fn build_matcher(args: &GrepCommand, paired: bool) -> Result<(PatternMatcher, bool)> {
     #[cfg(feature = "fuzzy")]
     if args.grep.fuzzy_args.fuzzy {
-        let patterns = load_patterns(args)?;
+        let patterns = load_patterns(args, paired)?;
         let and_logic = args.grep.and_logic() && patterns.total_len() > 1;
         let matcher = FuzzyMatcher::new(
             &patterns.pat1.bytes(),
@@ -179,7 +183,7 @@ fn build_matcher(args: &GrepCommand) -> Result<(PatternMatcher, bool)> {
         return Ok((PatternMatcher::Fuzzy(Box::new(matcher)), and_logic));
     }
 
-    let patterns = load_patterns(args)?;
+    let patterns = load_patterns(args, paired)?;
     let use_fixed = args.grep.fixed || patterns.are_fixed();
     if !args.grep.fixed && use_fixed {
         log::debug!("All patterns are fixed strings — auto-selecting Aho-Corasick");
@@ -219,7 +223,7 @@ fn run_grep(
     mate: Option<Mate>,
 ) -> Result<()> {
     let count = args.grep.count || args.grep.frac;
-    let (matcher, and_logic) = build_matcher(args)?;
+    let (matcher, and_logic) = build_matcher(args, reader.is_paired())?;
     let proc = FilterProcessor::new(
         matcher,
         and_logic,
@@ -254,6 +258,9 @@ fn run_grep(
 pub fn run(args: &GrepCommand) -> Result<()> {
     args.grep.validate()?;
     let reader = BinseqReader::new(args.input.path())?;
+    if args.grep.pattern_count {
+        return run_pattern_count(args, reader);
+    }
     let writer = build_writer(&args.output, reader.is_paired())?;
     let format = args.output.format()?;
     let mate = if reader.is_paired() {
@@ -261,12 +268,7 @@ pub fn run(args: &GrepCommand) -> Result<()> {
     } else {
         None
     };
-
-    if args.grep.pattern_count {
-        run_pattern_count(args, reader)
-    } else {
-        run_grep(args, reader, writer, format, mate)
-    }
+    run_grep(args, reader, writer, format, mate)
 }
 
 #[cfg(test)]
@@ -633,6 +635,56 @@ mod tests {
             "grep", "input.bq", "seq.1", "--header", "--range", "0..10",
         ]);
         assert!(result.is_err(), "--header should conflict with --range");
+    }
+
+    /// `-m 2` on a single-end file used to move every pattern to the empty
+    /// extended sequence, so nothing matched.
+    #[test]
+    fn test_grep_single_end_ignores_mate() -> Result<()> {
+        let in_tmp = write_fastx().call()?;
+        let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
+        encode(in_tmp.path(), bq_tmp.path())?;
+
+        let out_tmp = NamedTempFile::with_suffix(".fastq")?;
+        let cmd = crate::cli::GrepCommand::try_parse_from([
+            "grep",
+            bq_tmp.path().to_str().unwrap(),
+            "A",
+            "-m",
+            "2",
+            "-o",
+            out_tmp.path().to_str().unwrap(),
+        ])?;
+        super::run(&cmd)?;
+        assert!(count_fastx_records(out_tmp.path())? > 0);
+        Ok(())
+    }
+
+    /// Count modes never write records, so `-o/-p` are rejected up front.
+    #[test]
+    fn test_grep_count_modes_reject_output() {
+        for flag in ["-C", "-F", "-P"] {
+            assert!(
+                crate::cli::GrepCommand::try_parse_from(["grep", "x.cbq", "A", flag, "-o", "o.fq"])
+                    .is_err(),
+                "{flag} should conflict with -o"
+            );
+        }
+    }
+
+    #[cfg(feature = "fuzzy")]
+    #[test]
+    fn test_grep_fuzzy_options_require_fuzzy() {
+        for extra in [&["-k", "2"][..], &["-i"], &["--max-n-frac", "0.5"]] {
+            let mut argv = vec!["grep", "x.cbq", "ACGT"];
+            argv.extend_from_slice(extra);
+            assert!(
+                crate::cli::GrepCommand::try_parse_from(&argv).is_err(),
+                "{extra:?} should require -z"
+            );
+            argv.push("-z");
+            assert!(crate::cli::GrepCommand::try_parse_from(&argv).is_ok());
+        }
     }
 }
 
