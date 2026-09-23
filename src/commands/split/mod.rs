@@ -110,7 +110,6 @@ fn get_builder(args: &SplitCommand) -> Result<BinseqWriterBuilder> {
 }
 
 pub fn run(args: &SplitCommand) -> Result<()> {
-    args.validate()?;
     let splitter = build_splitter(args)?;
     let builder = get_builder(args)?;
     make_directory(&args.split.basepath)?;
