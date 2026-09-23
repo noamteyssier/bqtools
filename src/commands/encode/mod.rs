@@ -358,9 +358,6 @@ fn warn_skipped(num_given: usize, num_kept: usize) {
 }
 
 pub fn run(args: &EncodeCommand) -> Result<()> {
-    if args.input.format() == Some(FileFormat::Tsv) {
-        bail!("TSV is not a supported input format for encode");
-    }
     if args.input.recursive {
         trace!("launching encode-recursive");
         run_recursive(args)

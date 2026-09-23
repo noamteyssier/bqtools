@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use binseq::{BitSize, Policy};
 use clap::{
-    builder::{PossibleValuesParser, TypedValueParser},
+    builder::{PossibleValue, PossibleValuesParser, TypedValueParser},
     Parser, ValueEnum,
 };
 use std::{io::Write, path::Path};
@@ -14,36 +14,33 @@ use crate::{
 #[derive(Parser, Debug, Clone)]
 #[clap(next_help_heading = "OUTPUT FILE OPTIONS")]
 pub struct OutputFile {
-    #[clap(short = 'o', long, help = "Output file [default: stdout]")]
+    /// Output file [default: stdout]
+    #[clap(short = 'o', long)]
     pub output: Option<String>,
 
-    #[clap(
-        short,
-        long,
-        help = "Output file format prefix (required for paired BINSEQ files",
-        conflicts_with = "output"
-    )]
+    /// Write paired output to `{PREFIX}_R1.{ext}` and `{PREFIX}_R2.{ext}`
+    ///
+    /// Only valid for paired input with `--mate both`; a `.gz`/`.zst` suffix is
+    /// added when compressing. Without it, paired records are interleaved.
+    #[clap(short, long, conflicts_with = "output")]
     pub prefix: Option<String>,
 
-    /// Designate which of the two mates is being processed
+    /// Which mate(s) to output for paired BINSEQ files
     ///
-    /// This is only relevant for paired BINSEQ files. The mate number is 1-based.
+    /// Ignored (with a warning) for single-end files.
     #[clap(short = 'm', long, default_value = "both")]
     pub mate: Mate,
 
-    #[clap(short, long, help = "Output file format")]
+    /// Output file format [default: inferred from the output extension, else TSV]
+    #[clap(short, long, value_parser = parse_record_format())]
     pub format: Option<FileFormat>,
 
     /// Compress output file [default: inferred from the output extension, else uncompressed]
     #[clap(short, long)]
     pub compress: Option<CompressionType>,
 
-    #[clap(
-        short = 'T',
-        long,
-        help = "Number of threads to use for parallel compression (0 for auto)",
-        default_value = "0"
-    )]
+    /// Number of threads for processing and compression (0 = all CPUs; capped at CPU count)
+    #[clap(short = 'T', long, default_value = "0")]
     pub threads: usize,
 }
 impl OutputFile {
@@ -79,12 +76,14 @@ impl OutputFile {
         let format = if let Some(format) = self.format {
             format
         } else if let Some(path) = self.output.as_ref() {
-            FileFormat::from_path(path)
-                .ok_or_else(|| anyhow::anyhow!("Could not infer file format."))?
+            FileFormat::from_path(path).ok_or_else(|| {
+                anyhow::anyhow!("Could not infer file format from `{path}`; pass -f a|q|t")
+            })?
         } else {
             FileFormat::Tsv
         };
 
+        // `-f` can't select BAM, but an output path ending in `.bam` can
         if format == FileFormat::Bam {
             bail!(
                 "BAM output is not supported here; use FASTA (-f a), FASTQ (-f q), or TSV (-f t) instead"
@@ -94,9 +93,9 @@ impl OutputFile {
         Ok(format)
     }
 
-    /// Returns the number of threads to use for parallel compression
+    /// Returns the number of threads to use.
     ///
-    /// The number of threads is by default 1, 0 sets to maximum, and all other values are clamped to maximum.
+    /// The default of 0 sets the maximum; all other values are clamped to the maximum.
     pub fn threads(&self) -> usize {
         match self.threads {
             0 => num_cpus::get(),
@@ -140,12 +139,29 @@ impl OutputFile {
 
 #[derive(ValueEnum, PartialEq, Eq, Clone, Copy, Debug, Default)]
 pub enum Mate {
+    /// Primary (R1) mate only
     #[clap(name = "1")]
     One,
+    /// Extended (R2) mate only
     #[clap(name = "2")]
     Two,
+    /// Both mates
     #[default]
     Both,
+}
+
+/// Record output formats (`-f`) for commands writing FASTA/FASTQ/TSV.
+fn parse_record_format() -> impl TypedValueParser<Value = FileFormat> {
+    PossibleValuesParser::new([
+        PossibleValue::new("a").help("FASTA file format"),
+        PossibleValue::new("q").help("FASTQ file format"),
+        PossibleValue::new("t").help("TSV file format"),
+    ])
+    .map(|s| match s.as_str() {
+        "a" => FileFormat::Fasta,
+        "q" => FileFormat::Fastq,
+        _ => FileFormat::Tsv,
+    })
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -232,19 +248,19 @@ impl OutputBinseqInherited {
 #[derive(Parser, Debug, Clone, Copy)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct OutputBinseqOptions {
-    /// Defines the BINSEQ mode to use.
+    /// BINSEQ mode to write [default: inferred from the -o extension, else cbq]
     #[clap(short = 'm', long)]
     pub mode: Option<BinseqMode>,
 
     /// Policy for handling Ns in sequences
     ///
-    /// Used by bq+vbq
+    /// Only applied with 2-bit encoding (bq/vbq); cbq stores Ns directly.
     #[clap(short = 'p', long, default_value = "r")]
     pub policy: PolicyWrapper,
 
     /// Encoding bitsize (2 or 4 bits per nucleotide)
     ///
-    /// Used by bq+vbq
+    /// Used by bq+vbq; ignored by cbq.
     #[clap(short = 'S', long, default_value = "2", value_parser = parse_bitsize())]
     bitsize: u8,
 
@@ -256,7 +272,7 @@ pub struct OutputBinseqOptions {
 
     /// Skip ZSTD compression of VBQ blocks (default: compressed)
     ///
-    /// Only used by vbq.
+    /// Only used by vbq; bq is never compressed and cbq always is.
     #[clap(short = 'u', long)]
     pub uncompressed: bool,
 
@@ -266,36 +282,33 @@ pub struct OutputBinseqOptions {
     #[clap(short = 'Q', long)]
     pub skip_quality: bool,
 
-    /// Virtual block size (in bytes)
+    /// Virtual block size in bytes; accepts K/M/G suffixes (powers of 1024)
     ///
     /// Used by vbq+cbq
     #[clap(short = 'B', long, value_parser = parse_memory_size, default_value = "128K")]
     block_size: usize,
 
-    /// Number of threads to use for parallel reading and writing.
+    /// Number of threads to use (0 = all CPUs; capped at CPU count)
     ///
-    /// The number of threads is by default 0 [sets to maximum], and all other values are clamped to maximum.
+    /// When batch encoding several files, threads are split across concurrently
+    /// encoded files.
     #[clap(short = 'T', long, default_value = "0")]
     pub threads: usize,
 
     /// Zstd compression level
-    /// The compression level is between 1 and 22, with 3 being the default.
-    /// Higher levels provide better compression at the cost of speed.
-    /// Level 0 disables compression.
     ///
-    /// Used by vbq+cbq
+    /// Between 1 and 22; higher levels compress better at the cost of speed.
+    /// 0 uses zstd's default level.
+    ///
+    /// Only used by cbq (vbq always uses level 3).
     #[clap(short, long, default_value = "3")]
     pub level: i32,
 
     /// Archive mode
     ///
-    /// Automatically sets the relevant flags for VBQ archival mode.
-    ///
-    /// - 4bit encoding
-    /// - headers included
-    /// - block size set to 200M
-    /// - quality scores kept
-    /// - zstd compression
+    /// Sets 4-bit encoding, keeps headers and quality scores, uses a 200M block
+    /// size, and enables zstd compression. Intended for vbq; it does not change
+    /// `--mode`, so pair it with `-o out.vbq` or `-m vbq`.
     #[clap(short = 'A', long, conflicts_with_all = ["uncompressed", "skip_headers", "bitsize", "block_size", "skip_quality", "level"])]
     pub archive: bool,
 }
@@ -398,10 +411,13 @@ impl From<PolicyWrapper> for Policy {
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default, PartialEq)]
 pub enum BinseqMode {
+    /// Fixed-length, 2/4-bit encoded records
     #[clap(name = "bq")]
     Bq,
+    /// Variable-length, block-compressed records
     #[clap(name = "vbq")]
     Vbq,
+    /// Columnar, block-compressed records (default)
     #[clap(name = "cbq")]
     #[default]
     Cbq,

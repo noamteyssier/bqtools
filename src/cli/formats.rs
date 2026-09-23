@@ -8,10 +8,10 @@ pub enum FileFormat {
     /// FASTQ file format
     #[clap(name = "q")]
     Fastq,
-    /// BAM file format
+    /// SAM/BAM/CRAM file format
     #[clap(name = "b")]
     Bam,
-    /// TSV file format (decode only)
+    /// TSV file format
     #[clap(name = "t")]
     Tsv,
 }
