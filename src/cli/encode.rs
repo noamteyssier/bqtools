@@ -84,6 +84,20 @@ mod tests {
     }
 
     #[test]
+    fn test_recursive_requires_single_directory() {
+        let cmd = EncodeCommand::try_parse_from(["encode", "-r"]).unwrap();
+        assert!(cmd.input.as_directory().is_err());
+        let cmd = EncodeCommand::try_parse_from(["encode", "-r", "a", "b"]).unwrap();
+        assert!(cmd.input.as_directory().is_err());
+    }
+
+    #[test]
+    fn test_manifest_conflicts_with_recursive_and_inputs() {
+        assert!(EncodeCommand::try_parse_from(["encode", "-M", "m.txt", "-r"]).is_err());
+        assert!(EncodeCommand::try_parse_from(["encode", "-M", "m.txt", "a.fq"]).is_err());
+    }
+
+    #[test]
     fn test_output_path_collate_uses_explicit_output() {
         let path = output_path(&["a.fq", "b.fq", "--collate", "-o", "out.cbq"]).unwrap();
         assert_eq!(path.as_deref(), Some("out.cbq"));

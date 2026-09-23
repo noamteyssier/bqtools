@@ -49,7 +49,7 @@ pub struct InputFile {
     /// for R1/R2 encodings pair this with the `--paired` option.
     ///
     /// Options used will be applied to all files in the manifest.
-    #[clap(short = 'M', long)]
+    #[clap(short = 'M', long, conflicts_with_all = ["recursive", "input"])]
     pub manifest: Option<String>,
 
     #[clap(flatten)]
@@ -113,7 +113,11 @@ impl InputFile {
         if !self.recursive {
             bail!("Recursive mode is required to process a directory.");
         }
-        let path = PathBuf::from(&self.input[0]);
+        let path = match self.input.as_slice() {
+            [dir] => PathBuf::from(dir),
+            [] => bail!("Recursive mode requires a directory as input."),
+            _ => bail!("Recursive mode accepts exactly one directory as input."),
+        };
         if !path.is_dir() {
             bail!("Input path is not a directory: {}", path.display());
         }
