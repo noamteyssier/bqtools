@@ -27,7 +27,8 @@ pub struct OutputFile {
 
     /// Which mate(s) to output for paired BINSEQ files
     ///
-    /// Ignored (with a warning) for single-end files.
+    /// For grep, `1`/`2` also restrict all patterns to that mate. Ignored for
+    /// single-end files.
     #[clap(short = 'm', long, default_value = "both")]
     pub mate: Mate,
 
