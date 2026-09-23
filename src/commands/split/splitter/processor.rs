@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use binseq::{BinseqWriter, BinseqWriterBuilder, ParallelProcessor, SequencingRecordBuilder};
 use parking_lot::Mutex;
 
@@ -35,6 +35,9 @@ pub struct SplitProcessor {
 
     /// Aliases for each output bin (excludes the undetermined writer).
     aliases: Vec<String>,
+
+    /// Basename of the undetermined output (used in the summary).
+    undetermined_name: String,
 
     /// Output file path for each writer (parallel to `writer`/`counts`).
     paths: Vec<PathBuf>,
@@ -70,6 +73,11 @@ impl SplitProcessor {
         };
 
         let aliases = matcher.aliases().to_vec();
+        if write_undetermined && aliases.iter().any(|a| a == undetermined_basepath) {
+            bail!(
+                "Pattern alias '{undetermined_basepath}' collides with the unmatched output name; set --unmatched-basename to something else"
+            );
+        }
         aliases
             .iter()
             .map(String::as_str)
@@ -90,6 +98,7 @@ impl SplitProcessor {
             writer: Arc::new(writer),
             counts,
             aliases,
+            undetermined_name: undetermined_basepath.to_string(),
             paths,
         })
     }
@@ -125,7 +134,7 @@ impl SplitProcessor {
             .try_for_each(|(alias, count)| writeln!(&mut handle, "{alias}\t{count}"))?;
         if self.write_undetermined {
             if let Some(count) = self.counts.last() {
-                writeln!(&mut handle, "unmatched\t{}", *count.lock())?;
+                writeln!(&mut handle, "{}\t{}", self.undetermined_name, *count.lock())?;
             }
         }
         handle.flush().map_err(Into::into)
@@ -156,12 +165,9 @@ impl ParallelProcessor for SplitProcessor {
         };
         if let Some(pattern_idx) = self.matcher.split_idx(sseq, xseq) {
             // handle match
-            self.t_writer
-                .get_mut(pattern_idx)
-                .map(|w| -> binseq::Result<()> {
-                    w.push(rec)?;
-                    Ok(())
-                });
+            if let Some(w) = self.t_writer.get_mut(pattern_idx) {
+                w.push(rec)?;
+            }
 
             if let Some(c) = self.t_counts.get_mut(pattern_idx) {
                 *c += 1;

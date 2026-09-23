@@ -123,7 +123,16 @@ pub fn run(args: &SplitCommand) -> Result<()> {
         &args.split.unmatched_basename,
     )?;
     let reader = BinseqReader::new(args.input.path())?;
-    reader.process_parallel(proc.clone(), args.split.threads)?;
+    if let Some(mut span) = args.input.span {
+        let num_records = reader.num_records()?;
+        reader.process_parallel_range(
+            proc.clone(),
+            args.split.threads,
+            span.get_range(num_records)?,
+        )?;
+    } else {
+        reader.process_parallel(proc.clone(), args.split.threads)?;
+    }
     proc.finish()?;
     if !args.split.quiet {
         proc.pprint_counts()?;
@@ -215,6 +224,69 @@ mod tests {
                 "split total count wrong for {mode:?}"
             );
         }
+        Ok(())
+    }
+
+    /// `--span` used to be accepted but ignored.
+    #[test]
+    fn test_split_respects_span() -> Result<()> {
+        let in_tmp = write_fastx().call()?;
+        let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
+        encode(in_tmp.path(), bq_tmp.path())?;
+
+        let pat_file = write_patterns(&["AAAA", "CCCC"])?;
+        let out_dir = tempfile::tempdir()?;
+        let cmd = crate::cli::SplitCommand::try_parse_from([
+            "split",
+            bq_tmp.path().to_str().unwrap(),
+            "--file",
+            pat_file.path().to_str().unwrap(),
+            "--basepath",
+            out_dir.path().to_str().unwrap(),
+            "--min-records",
+            "0",
+            "--span",
+            "10..30",
+            "--quiet",
+        ])?;
+        super::run(&cmd)?;
+        assert_eq!(count_all_in_dir(out_dir.path(), ".cbq")?, 20);
+        Ok(())
+    }
+
+    /// An alias equal to the unmatched basename would open the same file twice.
+    #[test]
+    fn test_split_rejects_alias_colliding_with_unmatched() -> Result<()> {
+        let in_tmp = write_fastx().call()?;
+        let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
+        encode(in_tmp.path(), bq_tmp.path())?;
+
+        let pat_file = NamedTempFile::with_suffix(".fa")?;
+        std::fs::write(pat_file.path(), ">unmatched\nAAAA\n")?;
+        let out_dir = tempfile::tempdir()?;
+        let cmd = crate::cli::SplitCommand::try_parse_from([
+            "split",
+            bq_tmp.path().to_str().unwrap(),
+            "--file",
+            pat_file.path().to_str().unwrap(),
+            "--basepath",
+            out_dir.path().to_str().unwrap(),
+            "--quiet",
+        ])?;
+        assert!(super::run(&cmd).is_err());
+
+        let cmd = crate::cli::SplitCommand::try_parse_from([
+            "split",
+            bq_tmp.path().to_str().unwrap(),
+            "--file",
+            pat_file.path().to_str().unwrap(),
+            "--basepath",
+            out_dir.path().to_str().unwrap(),
+            "--unmatched-basename",
+            "rest",
+            "--quiet",
+        ])?;
+        super::run(&cmd)?;
         Ok(())
     }
 
