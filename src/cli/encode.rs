@@ -6,7 +6,7 @@ use crate::commands::encode::utils::generate_output_name;
 use super::{BinseqMode, InputFile, OutputBinseq};
 
 #[derive(clap::Parser, Debug, Clone)]
-/// Encode FASTQ or FASTA files to BINSEQ.
+/// Encode FASTQ, FASTA, or SAM/BAM/CRAM files to BINSEQ.
 pub struct EncodeCommand {
     #[clap(flatten)]
     pub input: InputFile,

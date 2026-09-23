@@ -168,16 +168,19 @@ fn parse_record_format() -> impl TypedValueParser<Value = FileFormat> {
 #[clap(next_help_heading = "OUTPUT BINSEQ OPTIONS")]
 #[allow(clippy::struct_excessive_bools)]
 pub struct OutputBinseq {
-    #[clap(short = 'o', long)]
     /// Output binseq file
     ///
+    /// Without `-o`, the name is derived from the input (e.g. `sample_R1.fq` +
+    /// `sample_R2.fq` -> `sample.cbq`); `-o` is required for stdin input or
+    /// when collating. Ignored when batch encoding yields multiple outputs.
     /// To output to stdout, use the `--pipe` flag.
+    #[clap(short = 'o', long)]
     pub output: Option<String>,
 
     #[clap(flatten)]
     pub options: OutputBinseqOptions,
 
-    /// Pipe the output to stdout
+    /// Pipe the output to stdout (single-output encodes only)
     #[clap(long, conflicts_with = "output")]
     pub pipe: bool,
 }
