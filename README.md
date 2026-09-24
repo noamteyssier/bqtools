@@ -7,7 +7,7 @@ A command-line utility for working with BINSEQ files.
 
 ## Overview
 
-bqtools provides tools to encode, decode, manipulate, and analyze [BINSEQ](https://github.com/arcinstitute/binseq) files.
+bqtools provides tools to encode, decode, manipulate, and analyze [BINSEQ](https://github.com/noamteyssier/binseq) files.
 It supports all BINSEQ variants (`*.bq`, `*.cbq`, `*.vbq`) and makes use of the [`binseq`](https://crates.io/crates/binseq) library.
 
 BINSEQ is a binary file format family designed for high-performance processing of DNA sequences.
@@ -66,7 +66,7 @@ To install `cargo` you can follow the instructions on the [official Rust website
 
 ```bash
 # Clone the repository
-git clone https://github.com/arcinstitute/bqtools.git
+git clone https://github.com/noamteyssier/bqtools.git
 cd bqtools
 
 # Install
