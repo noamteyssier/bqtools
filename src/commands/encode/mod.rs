@@ -37,7 +37,7 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
         encode_collection(
             args.input.build_paired_collection()?,
             opath.as_deref(),
-            args.mode()?,
+            args.output.mode()?,
             args.output.options.into(),
         )
     } else if args.input.interleaved {
@@ -56,7 +56,7 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
                         .single_path()?
                         .context("Must provide an input path for HTSLib")?,
                     opath.as_deref(),
-                    args.mode()?,
+                    args.output.mode()?,
                     args.output.options.into(),
                     true,
                 )
@@ -66,7 +66,7 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
             encode_collection(
                 args.input.build_interleaved_collection()?,
                 opath.as_deref(),
-                args.mode()?,
+                args.output.mode()?,
                 args.output.options.into(),
             )
         }
@@ -85,7 +85,7 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
                     .single_path()?
                     .context("Must provide an input path for HTSlib")?,
                 opath.as_deref(),
-                args.mode()?,
+                args.output.mode()?,
                 args.output.options.into(),
                 false,
             )
@@ -95,7 +95,7 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
         encode_collection(
             args.input.build_single_collection()?,
             opath.as_deref(),
-            args.mode()?,
+            args.output.mode()?,
             args.output.options.into(),
         )
     }?;
@@ -137,7 +137,7 @@ fn process_queue(args: &EncodeCommand, queue: Vec<Vec<PathBuf>>, regex: &Regex) 
         for (i, pair) in queue.into_iter().enumerate() {
             let thread_args = args.clone();
             let thread_regex = regex.clone();
-            let mode = args.mode()?;
+            let mode = args.output.mode()?;
 
             // First `leftover_threads` files get one extra thread
             let threads_for_this_file = if i < leftover_threads {
@@ -149,44 +149,28 @@ fn process_queue(args: &EncodeCommand, queue: Vec<Vec<PathBuf>>, regex: &Regex) 
             let handle = std::thread::spawn(move || -> Result<()> {
                 let mut file_args = thread_args.clone();
 
-                let outpath = match pair.len() {
-                    1 => {
-                        let inpath = pair[0].to_str().unwrap().to_string();
-                        let outpath = thread_regex
-                            .replace_all(&inpath, mode.extension())
-                            .to_string();
-                        file_args.input.input = vec![inpath];
-                        file_args.output.output = Some(outpath.clone());
-                        file_args.output.options.threads = threads_for_this_file;
-                        outpath
-                    }
-                    2 => {
-                        let inpaths: Vec<String> = pair
-                            .iter()
-                            .map(|path| path.to_str().unwrap().to_string())
-                            .collect();
-                        let outpath = generate_output_name(&pair, mode.extension())?;
+                let inpaths: Vec<String> = pair
+                    .iter()
+                    .map(|path| path.to_str().unwrap().to_string())
+                    .collect();
 
-                        file_args.input.input = inpaths;
-                        file_args.output.output = Some(outpath.clone());
-                        file_args.output.options.threads = threads_for_this_file;
-                        outpath
-                    }
-                    _ => {
-                        let inpaths: Vec<String> = pair
-                            .iter()
-                            .map(|path| path.to_str().unwrap().to_string())
-                            .collect();
-                        let outpath = thread_args.output_path()?.ok_or_else(|| {
-                            anyhow::anyhow!("Output path must be provided when collating files")
-                        })?;
-
-                        file_args.input.input = inpaths;
-                        file_args.output.output = Some(outpath.clone());
-                        file_args.output.options.threads = threads_for_this_file;
-                        outpath
-                    }
+                // A collated group always writes to the user-provided output path, even if
+                // it happens to contain only a single file (or file pair).
+                let collate = thread_args.input.batch_encoding_options.collate;
+                let paired = thread_args.input.batch_encoding_options.paired;
+                // `process_file_list` clears `-o` whenever it can't apply to this group.
+                let outpath = match (collate, &thread_args.output.output, pair.len()) {
+                    (_, Some(path), _) => path.clone(),
+                    (_, _, 1) => thread_regex
+                        .replace_all(&inpaths[0], mode.extension())
+                        .to_string(),
+                    (_, _, 2) if paired => generate_output_name(&pair, mode.extension())?,
+                    _ => bail!("Output path must be provided when collating files"),
                 };
+
+                file_args.input.input = inpaths;
+                file_args.output.output = Some(outpath.clone());
+                file_args.output.options.threads = threads_for_this_file;
 
                 match run_atomic(&file_args) {
                     Ok(()) => (),
@@ -285,6 +269,17 @@ fn process_file_list(args: &EncodeCommand, file_queue: Vec<PathBuf>) -> Result<(
         bail!("No files found matching the expected pattern.");
     }
 
+    // A collated group has no natural output name unless it is a single file (or file pair).
+    // Check up front so the command fails instead of logging the error from a worker thread.
+    let group_size = 1 + usize::from(args.input.batch_encoding_options.paired);
+    if args.input.batch_encoding_options.collate
+        && args.output.output.is_none()
+        && pqueue.iter().any(|group| group.len() > group_size)
+    {
+        error!("Output path must be provided when collating multiple files");
+        bail!("Output path must be provided when collating multiple files");
+    }
+
     // Log what we found
     if args.input.batch_encoding_options.paired {
         info!("Total file pairs found: {}", pqueue.len());
@@ -292,11 +287,14 @@ fn process_file_list(args: &EncodeCommand, file_queue: Vec<PathBuf>) -> Result<(
         info!("Total files found: {}", pqueue.len());
     }
 
+    // `-o` names the single output group; with multiple outputs each is auto-named.
+    let mut args = args.clone();
     if pqueue.len() > 1 && args.output.output.is_some() {
         warn!("Output path specified but ignored when batch encoding multiple files.");
+        args.output.output = None;
     }
 
-    process_queue(args, pqueue, &regex)
+    process_queue(&args, pqueue, &regex)
 }
 
 fn run_recursive(args: &EncodeCommand) -> Result<()> {
@@ -333,7 +331,9 @@ fn run_manifest(args: &EncodeCommand) -> Result<()> {
 
     let handle = File::open(manifest).map(BufReader::new)?;
     let lines = handle.lines().collect::<Result<Vec<_>, _>>()?;
+    let num_lines = lines.len();
     let file_queue = filter_valid_paths(lines.into_iter().map(PathBuf::from), &regex)?;
+    warn_skipped(num_lines, file_queue.len());
 
     process_file_list(args, file_queue)
 }
@@ -342,8 +342,19 @@ fn run_manifest_inline(args: &EncodeCommand) -> Result<()> {
     let regex = build_file_regex(args.input.batch_encoding_options.paired)?;
 
     let file_queue = filter_valid_paths(args.input.input.iter().map(PathBuf::from), &regex)?;
+    warn_skipped(args.input.num_files(), file_queue.len());
 
     process_file_list(args, file_queue)
+}
+
+/// Explicitly listed inputs that fail the extension (or `_R1/_R2`) filter are dropped.
+fn warn_skipped(num_given: usize, num_kept: usize) {
+    if num_kept < num_given {
+        warn!(
+            "Skipping {} input path(s) not matching *.{{fastq,fq,fasta,fa}}[.gz|.zst] (with _R1/_R2 if --paired)",
+            num_given - num_kept
+        );
+    }
 }
 
 pub fn run(args: &EncodeCommand) -> Result<()> {
@@ -506,6 +517,126 @@ mod tests {
                 "paired encode count wrong for {mode:?}"
             );
         }
+        Ok(())
+    }
+
+    /// Writes `n` single-end files (or file pairs) named `sample{i}[_R1|_R2].fq` into `dir`.
+    fn write_groups(dir: &std::path::Path, paired: bool, n: usize) -> Result<()> {
+        for group in 0..n {
+            let names = if paired {
+                vec![
+                    format!("sample{group}_R1.fq"),
+                    format!("sample{group}_R2.fq"),
+                ]
+            } else {
+                vec![format!("sample{group}.fq")]
+            };
+            for name in names {
+                std::fs::copy(write_fastx().call()?.path(), dir.join(name))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Counts `.cbq` files directly inside `dir`.
+    fn count_cbq(dir: &std::path::Path) -> Result<usize> {
+        Ok(std::fs::read_dir(dir)?
+            .filter(|e| {
+                e.as_ref()
+                    .is_ok_and(|e| e.path().extension().is_some_and(|ext| ext == "cbq"))
+            })
+            .count())
+    }
+
+    /// `--recursive --collate` without `-o` must refuse to auto-name a group of multiple files
+    /// (or file pairs), rather than naming the output after the first file.
+    #[test]
+    fn test_recursive_collate_requires_output() -> Result<()> {
+        for paired in [false, true] {
+            let dir = tempfile::tempdir()?;
+            write_groups(dir.path(), paired, 2)?;
+
+            let mut args = vec![
+                "encode",
+                dir.path().to_str().unwrap(),
+                "--recursive",
+                "--collate",
+            ];
+            if paired {
+                args.push("--paired");
+            }
+            let cmd = crate::cli::EncodeCommand::try_parse_from(args)?;
+            let err = super::run(&cmd).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("Output path must be provided when collating multiple files"),
+                "unexpected error: paired={paired}: {err}"
+            );
+
+            let num_binseq = count_cbq(dir.path())?;
+            assert_eq!(num_binseq, 0, "unexpected output written: paired={paired}");
+        }
+        Ok(())
+    }
+
+    /// `--recursive --collate -o <path>` must honor the output path regardless of how many
+    /// files (or file pairs) are found.
+    #[test]
+    fn test_recursive_collate_respects_output() -> Result<()> {
+        for (paired, num_groups) in iproduct!([false, true], [1, 2]) {
+            let dir = tempfile::tempdir()?;
+            write_groups(dir.path(), paired, num_groups)?;
+
+            let out_dir = tempfile::tempdir()?;
+            let out_path = out_dir.path().join("collated.cbq");
+            let mut args = vec![
+                "encode",
+                dir.path().to_str().unwrap(),
+                "--recursive",
+                "--collate",
+                "-o",
+                out_path.to_str().unwrap(),
+            ];
+            if paired {
+                args.push("--paired");
+            }
+            let cmd = crate::cli::EncodeCommand::try_parse_from(args)?;
+            super::run(&cmd)?;
+
+            assert_eq!(
+                count_binseq(&out_path)?,
+                DEFAULT_NUM_RECORDS * num_groups,
+                "collated count wrong: paired={paired} num_groups={num_groups}"
+            );
+            let num_binseq = count_cbq(dir.path())?;
+            assert_eq!(
+                num_binseq, 0,
+                "unexpected output written next to inputs: paired={paired} num_groups={num_groups}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Recursive mode used to force CBQ regardless of the `-o` extension.
+    #[test]
+    fn test_recursive_collate_respects_output_extension() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        write_groups(dir.path(), false, 2)?;
+
+        let out_dir = tempfile::tempdir()?;
+        let out_path = out_dir.path().join("collated.vbq");
+        let cmd = crate::cli::EncodeCommand::try_parse_from([
+            "encode",
+            dir.path().to_str().unwrap(),
+            "--recursive",
+            "--collate",
+            "-o",
+            out_path.to_str().unwrap(),
+        ])?;
+        super::run(&cmd)?;
+
+        let reader = binseq::BinseqReader::new(out_path.to_str().unwrap())?;
+        assert!(matches!(reader, binseq::BinseqReader::Vbq(_)));
         Ok(())
     }
 }

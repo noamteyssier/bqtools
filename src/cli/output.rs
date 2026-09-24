@@ -1,46 +1,47 @@
 use anyhow::{bail, Result};
 use binseq::{BitSize, Policy};
-use clap::{Parser, ValueEnum};
-use log::warn;
+use clap::{
+    builder::{PossibleValuesParser, TypedValueParser},
+    Parser, ValueEnum,
+};
 use std::{io::Write, path::Path};
 
 use crate::{
-    cli::FileFormat,
+    cli::{formats::format_parser, FileFormat},
     commands::{compress_passthrough, match_output, CompressionType},
 };
 
 #[derive(Parser, Debug, Clone)]
 #[clap(next_help_heading = "OUTPUT FILE OPTIONS")]
 pub struct OutputFile {
-    #[clap(short = 'o', long, help = "Output file [default: stdout]")]
+    /// Output file [default: stdout]
+    #[clap(short = 'o', long)]
     pub output: Option<String>,
 
-    #[clap(
-        short,
-        long,
-        help = "Output file format prefix (required for paired BINSEQ files",
-        conflicts_with = "output"
-    )]
+    /// Write paired output to `{PREFIX}_R1.{ext}` and `{PREFIX}_R2.{ext}`
+    ///
+    /// Only valid for paired input with `--mate both`; a `.gz`/`.zst` suffix is
+    /// added when compressing. Without it, paired records are interleaved.
+    #[clap(short, long, conflicts_with = "output")]
     pub prefix: Option<String>,
 
-    /// Designate which of the two mates is being processed
+    /// Which mate(s) to output for paired BINSEQ files
     ///
-    /// This is only relevant for paired BINSEQ files. The mate number is 1-based.
+    /// For grep, `1`/`2` also restrict all patterns to that mate. Ignored for
+    /// single-end files.
     #[clap(short = 'm', long, default_value = "both")]
     pub mate: Mate,
 
-    #[clap(short, long, help = "Output file format")]
+    /// Output file format [default: inferred from the output extension, else TSV]
+    #[clap(short, long, value_parser = format_parser(&[FileFormat::Fasta, FileFormat::Fastq, FileFormat::Tsv]))]
     pub format: Option<FileFormat>,
 
-    #[clap(short, long, help = "Compress output file", default_value = "u")]
-    pub compress: CompressionType,
+    /// Compress output file [default: inferred from the output extension, else uncompressed]
+    #[clap(short, long)]
+    pub compress: Option<CompressionType>,
 
-    #[clap(
-        short = 'T',
-        long,
-        help = "Number of threads to use for parallel compression (0 for auto)",
-        default_value = "0"
-    )]
+    /// Number of threads for processing and compression (0 = all CPUs; capped at CPU count)
+    #[clap(short = 'T', long, default_value = "0")]
     pub threads: usize,
 }
 impl OutputFile {
@@ -49,8 +50,12 @@ impl OutputFile {
         compress_passthrough(writer, self.compress(), self.threads())
     }
 
+    /// Explicit `-c` wins; otherwise compression is inferred from the output extension.
     #[allow(clippy::case_sensitive_file_extension_comparisons)]
     pub fn compress(&self) -> CompressionType {
+        if let Some(compress) = self.compress {
+            return compress;
+        }
         self.output
             .as_ref()
             .map_or(CompressionType::Uncompressed, |path| {
@@ -72,12 +77,14 @@ impl OutputFile {
         let format = if let Some(format) = self.format {
             format
         } else if let Some(path) = self.output.as_ref() {
-            FileFormat::from_path(path)
-                .ok_or_else(|| anyhow::anyhow!("Could not infer file format."))?
+            FileFormat::from_path(path).ok_or_else(|| {
+                anyhow::anyhow!("Could not infer file format from `{path}`; pass -f a|q|t")
+            })?
         } else {
             FileFormat::Tsv
         };
 
+        // `-f` can't select BAM, but an output path ending in `.bam` can
         if format == FileFormat::Bam {
             bail!(
                 "BAM output is not supported here; use FASTA (-f a), FASTQ (-f q), or TSV (-f t) instead"
@@ -87,14 +94,8 @@ impl OutputFile {
         Ok(format)
     }
 
-    /// Returns the number of threads to use for parallel compression
-    ///
-    /// The number of threads is by default 1, 0 sets to maximum, and all other values are clamped to maximum.
     pub fn threads(&self) -> usize {
-        match self.threads {
-            0 => num_cpus::get(),
-            n => n.min(num_cpus::get()),
-        }
+        clamp_threads(self.threads)
     }
 
     pub fn as_paired_writer(
@@ -107,24 +108,22 @@ impl OutputFile {
         })?;
 
         // Construct the output file names
-        let r1_name = if let Some(ext) = self.compress.extension() {
-            format!("{}_R1.{}.{}", prefix, format.extension(), ext)
-        } else {
-            format!("{}_R1.{}", prefix, format.extension())
-        };
-        let r2_name = if let Some(ext) = self.compress.extension() {
-            format!("{}_R2.{}.{}", prefix, format.extension(), ext)
-        } else {
-            format!("{}_R2.{}", prefix, format.extension())
+        let compress = self.compress();
+        let name = |mate: &str| {
+            let base = format!("{prefix}_{mate}.{}", format.extension());
+            match compress.extension() {
+                Some(ext) => format!("{base}.{ext}"),
+                None => base,
+            }
         };
 
         // Open the output files
-        let r1 = match_output(Some(&r1_name))?;
-        let r2 = match_output(Some(&r2_name))?;
+        let r1 = match_output(Some(name("R1")))?;
+        let r2 = match_output(Some(name("R2")))?;
 
         // Compress the output files (if necessary)
-        let r1 = compress_passthrough(r1, self.compress, self.threads())?;
-        let r2 = compress_passthrough(r2, self.compress, self.threads())?;
+        let r1 = compress_passthrough(r1, compress, self.threads())?;
+        let r2 = compress_passthrough(r2, compress, self.threads())?;
 
         Ok((r1, r2))
     }
@@ -132,42 +131,46 @@ impl OutputFile {
 
 #[derive(ValueEnum, PartialEq, Eq, Clone, Copy, Debug, Default)]
 pub enum Mate {
+    /// Primary (R1) mate only
     #[clap(name = "1")]
     One,
+    /// Extended (R2) mate only
     #[clap(name = "2")]
     Two,
+    /// Both mates
     #[default]
     Both,
+}
+
+/// 0 means all CPUs; any other value is capped at the CPU count.
+pub fn clamp_threads(n: usize) -> usize {
+    match n {
+        0 => num_cpus::get(),
+        n => n.min(num_cpus::get()),
+    }
 }
 
 #[derive(Parser, Debug, Clone)]
 #[clap(next_help_heading = "OUTPUT BINSEQ OPTIONS")]
 #[allow(clippy::struct_excessive_bools)]
 pub struct OutputBinseq {
-    #[clap(short = 'o', long)]
     /// Output binseq file
     ///
+    /// Without `-o`, the name is derived from the input (e.g. `sample_R1.fq` +
+    /// `sample_R2.fq` -> `sample.cbq`); `-o` is required for stdin input or
+    /// when collating. Ignored when batch encoding yields multiple outputs.
     /// To output to stdout, use the `--pipe` flag.
+    #[clap(short = 'o', long)]
     pub output: Option<String>,
 
     #[clap(flatten)]
     pub options: OutputBinseqOptions,
 
-    /// Pipe the output to stdout
-    #[clap(long)]
+    /// Pipe the output to stdout (single-output encodes only)
+    #[clap(long, conflicts_with = "output")]
     pub pipe: bool,
 }
 impl OutputBinseq {
-    pub fn as_writer(&self) -> Result<Box<dyn Write + Send>> {
-        if self.output.is_none() && !self.pipe {
-            bail!(
-                "Refusing to write binary BINSEQ data to stdout. Provide an output path with `-o/--output`, or pass `--pipe` to write to stdout explicitly."
-            );
-        }
-        let writer = match_output(self.output.as_deref())?;
-        Ok(writer)
-    }
-
     pub fn mode(&self) -> Result<BinseqMode> {
         if let Some(mode) = self.options.mode {
             Ok(mode)
@@ -184,23 +187,67 @@ impl OutputBinseq {
     }
 }
 
+/// BINSEQ output for commands that copy the input file's mode and encoding settings.
+#[derive(Parser, Debug, Clone)]
+#[clap(next_help_heading = "OUTPUT BINSEQ OPTIONS")]
+pub struct OutputBinseqInherited {
+    /// Output binseq file
+    ///
+    /// The output keeps the input's BINSEQ mode and settings, so a `.bq/.vbq/.cbq`
+    /// extension must match the input. To output to stdout, use the `--pipe` flag.
+    #[clap(short = 'o', long)]
+    pub output: Option<String>,
+
+    /// Pipe the output to stdout
+    #[clap(long, conflicts_with = "output")]
+    pub pipe: bool,
+
+    /// Number of threads to use (0 = all CPUs; clamped to CPU count)
+    #[clap(short = 'T', long, default_value = "0")]
+    pub threads: usize,
+}
+impl OutputBinseqInherited {
+    /// Opens the output, refusing a known BINSEQ extension that disagrees with `mode`.
+    pub fn as_writer(&self, mode: BinseqMode) -> Result<Box<dyn Write + Send>> {
+        if let Some(path) = self.output.as_deref() {
+            if let Ok(ext_mode) = BinseqMode::determine(path) {
+                if ext_mode != mode {
+                    bail!(
+                        "Output extension implies {ext_mode:?} but input is {mode:?}; the output always keeps the input's BINSEQ mode"
+                    );
+                }
+            }
+        }
+        if self.output.is_none() && !self.pipe {
+            bail!(
+                "Refusing to write binary BINSEQ data to stdout. Provide an output path with `-o/--output`, or pass `--pipe` to write to stdout explicitly."
+            );
+        }
+        match_output(self.output.as_deref())
+    }
+
+    pub fn threads(&self) -> usize {
+        clamp_threads(self.threads)
+    }
+}
+
 #[derive(Parser, Debug, Clone, Copy)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct OutputBinseqOptions {
-    /// Defines the BINSEQ mode to use.
+    /// BINSEQ mode to write [default: inferred from the -o extension, else cbq]
     #[clap(short = 'm', long)]
     pub mode: Option<BinseqMode>,
 
     /// Policy for handling Ns in sequences
     ///
-    /// Used by bq+vbq
+    /// Only applied with 2-bit encoding (bq/vbq); cbq stores Ns directly.
     #[clap(short = 'p', long, default_value = "r")]
     pub policy: PolicyWrapper,
 
     /// Encoding bitsize (2 or 4 bits per nucleotide)
     ///
-    /// Used by bq+vbq
-    #[clap(short = 'S', long, default_value = "2")]
+    /// Used by bq+vbq; ignored by cbq.
+    #[clap(short = 'S', long, default_value = "2", value_parser = parse_bitsize())]
     bitsize: u8,
 
     /// Exclude sequence names (headers) in the binseq file
@@ -211,7 +258,7 @@ pub struct OutputBinseqOptions {
 
     /// Skip ZSTD compression of VBQ blocks (default: compressed)
     ///
-    /// Only used by vbq.
+    /// Only used by vbq; bq is never compressed and cbq always is.
     #[clap(short = 'u', long)]
     pub uncompressed: bool,
 
@@ -221,36 +268,33 @@ pub struct OutputBinseqOptions {
     #[clap(short = 'Q', long)]
     pub skip_quality: bool,
 
-    /// Virtual block size (in bytes)
+    /// Virtual block size in bytes; accepts K/M/G suffixes (powers of 1024)
     ///
     /// Used by vbq+cbq
     #[clap(short = 'B', long, value_parser = parse_memory_size, default_value = "128K")]
     block_size: usize,
 
-    /// Number of threads to use for parallel reading and writing.
+    /// Number of threads to use (0 = all CPUs; capped at CPU count)
     ///
-    /// The number of threads is by default 0 [sets to maximum], and all other values are clamped to maximum.
+    /// When batch encoding several files, threads are split across concurrently
+    /// encoded files.
     #[clap(short = 'T', long, default_value = "0")]
     pub threads: usize,
 
     /// Zstd compression level
-    /// The compression level is between 1 and 22, with 3 being the default.
-    /// Higher levels provide better compression at the cost of speed.
-    /// Level 0 disables compression.
     ///
-    /// Used by vbq+cbq
+    /// Between 1 and 22; higher levels compress better at the cost of speed.
+    /// 0 uses zstd's default level.
+    ///
+    /// Only used by cbq (vbq always uses level 3).
     #[clap(short, long, default_value = "3")]
     pub level: i32,
 
     /// Archive mode
     ///
-    /// Automatically sets the relevant flags for VBQ archival mode.
-    ///
-    /// - 4bit encoding
-    /// - headers included
-    /// - block size set to 200M
-    /// - quality scores kept
-    /// - zstd compression
+    /// Sets 4-bit encoding, keeps headers and quality scores, uses a 200M block
+    /// size, and enables zstd compression. Intended for vbq; it does not change
+    /// `--mode`, so pair it with `-o out.vbq` or `-m vbq`.
     #[clap(short = 'A', long, conflicts_with_all = ["uncompressed", "skip_headers", "bitsize", "block_size", "skip_quality", "level"])]
     pub archive: bool,
 }
@@ -288,23 +332,17 @@ impl OutputBinseqOptions {
     }
 
     pub fn threads(&self) -> usize {
-        match self.threads {
-            0 => num_cpus::get(),
-            n => n.min(num_cpus::get()),
-        }
+        clamp_threads(self.threads)
     }
 
     pub fn bitsize(&self) -> BitSize {
         if self.archive {
             BitSize::Four
         } else {
+            // `parse_bitsize` restricts the value to 2 or 4
             match self.bitsize {
-                2 => BitSize::Two,
                 4 => BitSize::Four,
-                _ => {
-                    warn!("Invalid provided bitsize - defaulting to 2");
-                    BitSize::Two
-                }
+                _ => BitSize::Two,
             }
         }
     }
@@ -356,10 +394,13 @@ impl From<PolicyWrapper> for Policy {
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default, PartialEq)]
 pub enum BinseqMode {
+    /// Fixed-length, 2/4-bit encoded records
     #[clap(name = "bq")]
     Bq,
+    /// Variable-length, block-compressed records
     #[clap(name = "vbq")]
     Vbq,
+    /// Columnar, block-compressed records (default)
     #[clap(name = "cbq")]
     #[default]
     Cbq,
@@ -400,6 +441,10 @@ impl From<BinseqMode> for binseq::write::Format {
             BinseqMode::Cbq => binseq::write::Format::Cbq,
         }
     }
+}
+
+fn parse_bitsize() -> impl TypedValueParser<Value = u8> {
+    PossibleValuesParser::new(["2", "4"]).map(|s| s.parse::<u8>().unwrap())
 }
 
 fn parse_memory_size(input: &str) -> Result<usize, String> {
@@ -450,27 +495,86 @@ impl From<OutputBinseqOptions> for BinseqConfig {
 mod tests {
     use clap::Parser;
 
-    use super::OutputBinseq;
+    use super::{BinseqMode, OutputBinseq, OutputBinseqInherited, OutputFile};
+    use crate::commands::CompressionType;
+
+    fn compress_for(flags: &[&str]) -> CompressionType {
+        let mut argv = vec!["output"];
+        argv.extend_from_slice(flags);
+        OutputFile::try_parse_from(argv).unwrap().compress()
+    }
+
+    #[test]
+    fn test_compress_explicit_flag_wins() {
+        assert!(matches!(compress_for(&["-c", "g"]), CompressionType::Gzip));
+        assert!(matches!(
+            compress_for(&["-o", "x.fq", "-c", "z"]),
+            CompressionType::Zstd
+        ));
+        assert!(matches!(
+            compress_for(&["-o", "x.fq.gz", "-c", "u"]),
+            CompressionType::Uncompressed
+        ));
+    }
+
+    #[test]
+    fn test_compress_inferred_from_extension() {
+        assert!(matches!(
+            compress_for(&["-o", "x.fq.gz"]),
+            CompressionType::Gzip
+        ));
+        assert!(matches!(
+            compress_for(&["-o", "x.fq.zst"]),
+            CompressionType::Zstd
+        ));
+        assert!(matches!(
+            compress_for(&["-o", "x.fq"]),
+            CompressionType::Uncompressed
+        ));
+        assert!(matches!(compress_for(&[]), CompressionType::Uncompressed));
+    }
 
     /// Without `-o` or `--pipe`, writing binary BINSEQ data to stdout must be
     /// refused rather than silently dumping binary into the terminal.
     #[test]
     fn test_as_writer_rejects_bare_stdout() {
-        let args = OutputBinseq::try_parse_from(["output"]).unwrap();
-        assert!(args.as_writer().is_err());
+        let args = OutputBinseqInherited::try_parse_from(["output"]).unwrap();
+        assert!(args.as_writer(BinseqMode::Cbq).is_err());
+    }
+
+    #[test]
+    fn test_pipe_conflicts_with_output() {
+        assert!(OutputBinseq::try_parse_from(["output", "--pipe", "-o", "x.cbq"]).is_err());
+    }
+
+    #[test]
+    fn test_bitsize_rejects_invalid_values() {
+        assert!(OutputBinseq::try_parse_from(["output", "-S", "3"]).is_err());
+        assert!(OutputBinseq::try_parse_from(["output", "-S", "4"]).is_ok());
     }
 
     #[test]
     fn test_as_writer_allows_explicit_pipe() {
-        let args = OutputBinseq::try_parse_from(["output", "--pipe"]).unwrap();
-        assert!(args.as_writer().is_ok());
+        let args = OutputBinseqInherited::try_parse_from(["output", "--pipe"]).unwrap();
+        assert!(args.as_writer(BinseqMode::Cbq).is_ok());
     }
 
     #[test]
     fn test_as_writer_allows_output_path() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let args =
-            OutputBinseq::try_parse_from(["output", "-o", tmp.path().to_str().unwrap()]).unwrap();
-        assert!(args.as_writer().is_ok());
+            OutputBinseqInherited::try_parse_from(["output", "-o", tmp.path().to_str().unwrap()])
+                .unwrap();
+        assert!(args.as_writer(BinseqMode::Cbq).is_ok());
+    }
+
+    #[test]
+    fn test_inherited_rejects_mismatched_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.bq");
+        let args = OutputBinseqInherited::try_parse_from(["output", "-o", path.to_str().unwrap()])
+            .unwrap();
+        assert!(args.as_writer(BinseqMode::Cbq).is_err());
+        assert!(args.as_writer(BinseqMode::Bq).is_ok());
     }
 }

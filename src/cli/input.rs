@@ -4,52 +4,55 @@ use anyhow::{bail, Result};
 use binseq::BinseqReader;
 use clap::Parser;
 use log::{debug, error, warn};
-use paraseq::fastx;
+use paraseq::{fastx, ReaderBuilder};
 
 use crate::{cli::BinseqMode, types::BoxedReader};
 
-use super::FileFormat;
+use super::{formats::format_parser, FileFormat};
 
 #[derive(Parser, Debug, Clone)]
 #[clap(next_help_heading = "INPUT FILE OPTIONS")]
 pub struct InputFile {
-    /// Input file [default: stdin]
+    /// Input file(s) [default: stdin]
     ///
-    /// Can specify either zero (stdin), one, or two (paired) input files.
-    ///
-    /// If more than two files are provided they will be collated into a single collection.
-    /// Use the `--paired` option to specify paired-end input (number of files must be even).
-    #[clap(help = "Input file [default: stdin]", num_args = 0..)]
+    /// Zero (stdin), one, or two (an R1/R2 pair) files are encoded to a single
+    /// output. More than two files are each encoded separately (use `--collate`
+    /// to merge them); these must match `*.{fastq,fq,fasta,fa}[.gz|.zst]`
+    /// (and `_R1`/`_R2` with `--paired`), others are skipped.
+    #[clap(num_args = 0..)]
     pub input: Vec<String>,
 
-    #[clap(short, long, help = "Input file format")]
+    /// Input file format
+    ///
+    /// FASTA/FASTQ are auto-detected. Use `b` for SAM/BAM/CRAM from stdin or with
+    /// a non-standard extension (a single `.sam/.bam/.cram` path is detected).
+    #[clap(short, long, value_parser = format_parser(&[FileFormat::Fasta, FileFormat::Fastq, FileFormat::Bam]))]
     format: Option<FileFormat>,
 
     /// Batch size (in records) to use in parallel processing
     ///
     /// Set this to a lower value for embedding genomes to better
-    /// make use of parallelism (e.g. 2-4).
+    /// make use of parallelism (e.g. 2-4). Not applied to SAM/BAM/CRAM input.
     #[clap(short, long)]
     pub batch_size: Option<usize>,
 
-    /// Input is paired-interleaved
+    /// Input is paired-interleaved (alternating R1/R2 records, or name-sorted paired SAM/BAM/CRAM)
     #[clap(short = 'I', long, conflicts_with = "paired")]
     pub interleaved: bool,
 
-    /// Apply encoding to all fasta/fastq files in the provided directory input.
+    /// Encode all fasta/fastq files found under a single input directory
     ///
-    /// For R1/R2 encodings pair this with the `--paired` option.
-    ///
-    /// Options used will be applied to all in the directory.
+    /// Each file (or R1/R2 pair with `--paired`) is written next to its input
+    /// unless `--collate` is set. Options used will be applied to all files.
     #[clap(short = 'r', long)]
     pub recursive: bool,
 
-    /// Path to a text file containing a list of input files to process.
+    /// Path to a text file listing input files to process (one per line)
     ///
-    /// for R1/R2 encodings pair this with the `--paired` option.
-    ///
-    /// Options used will be applied to all files in the manifest.
-    #[clap(short = 'M', long)]
+    /// For R1/R2 encodings pair this with the `--paired` option. Paths go through
+    /// the same extension filter as positional inputs. Options used will be
+    /// applied to all files in the manifest.
+    #[clap(short = 'M', long, conflicts_with_all = ["recursive", "input"])]
     pub manifest: Option<String>,
 
     #[clap(flatten)]
@@ -74,8 +77,10 @@ impl InputFile {
         }
     }
 
+    /// Two inputs are implicitly treated as a pair unless they are collated or interleaved.
     pub fn paired(&self) -> bool {
-        self.input.len() == 2 || self.batch_encoding_options.paired
+        self.batch_encoding_options.paired
+            || (self.input.len() == 2 && !self.batch_encoding_options.collate && !self.interleaved)
     }
 
     /// Returns the number of input files.
@@ -111,7 +116,11 @@ impl InputFile {
         if !self.recursive {
             bail!("Recursive mode is required to process a directory.");
         }
-        let path = PathBuf::from(&self.input[0]);
+        let path = match self.input.as_slice() {
+            [dir] => PathBuf::from(dir),
+            [] => bail!("Recursive mode requires a directory as input."),
+            _ => bail!("Recursive mode accepts exactly one directory as input."),
+        };
         if !path.is_dir() {
             bail!("Input path is not a directory: {}", path.display());
         }
@@ -197,13 +206,13 @@ fn load_simple_reader(
     } else {
         "stdin".to_string()
     };
+
+    debug!("building on-disk fastx reader (batch size: {batch_size:?}) from: {path_display}");
+    let mut builder = ReaderBuilder::optional_path(path);
     if let Some(size) = batch_size {
-        debug!("building on-disk fastx reader with batch size {size} from: {path_display}");
-        fastx::Reader::from_optional_path_with_batch_size(path, size)
-    } else {
-        debug!("building on-disk fastx reader from: {path_display}");
-        fastx::Reader::from_optional_path(path)
+        builder = builder.batch_size(size);
     }
+    builder.build()
 }
 
 #[cfg(feature = "gcs")]
@@ -211,19 +220,18 @@ fn load_gcs_reader(
     path: &str,
     batch_size: Option<usize>,
 ) -> Result<fastx::Reader<BoxedReader>, paraseq::Error> {
+    debug!("building GCS fastx reader (batch size: {batch_size:?}) from: {path}");
+    let mut builder = ReaderBuilder::gcs(path);
     if let Some(size) = batch_size {
-        debug!("building GCS fastx reader with batch size {size} from: {path}");
-        fastx::Reader::from_gcs_with_batch_size(path, size)
-    } else {
-        debug!("building GCS fastx reader from: {path}");
-        fastx::Reader::from_gcs(path)
+        builder = builder.batch_size(size);
     }
+    builder.build()
 }
 
 #[derive(Parser, Debug, Clone, PartialEq, Eq)]
 #[clap(next_help_heading = "RECURSION OPTIONS")]
 pub struct RecursiveOptions {
-    /// Maximum depth in the directory tree to process. Leaving this option empty will set no limit.
+    /// Maximum directory depth to search (1 = only the directory's own files; default: no limit)
     #[clap(long, requires = "recursive")]
     pub depth: Option<usize>,
 }
@@ -231,7 +239,9 @@ pub struct RecursiveOptions {
 #[derive(Parser, Debug, Clone, PartialEq, Eq)]
 #[clap(next_help_heading = "BATCH ENCODING OPTIONS")]
 pub struct BatchEncodingOptions {
-    /// Encode *{_R1,_R2}* record pairs. Ignored unless `--manifest` or `--recursive` is specified.
+    /// Treat inputs as *{_R1,_R2}* record pairs (the number of files must be even)
+    ///
+    /// Two positional files are paired by default unless `--collate` or `-I` is set.
     #[clap(short = 'P', long)]
     pub paired: bool,
 
@@ -243,10 +253,13 @@ pub struct BatchEncodingOptions {
 #[derive(Parser, Debug)]
 #[clap(next_help_heading = "INPUT FILE OPTIONS")]
 pub struct InputBinseq {
-    #[clap(help = "Input binseq file")]
+    /// Input BINSEQ file (.bq/.vbq/.cbq)
     pub input: String,
 
-    /// Span of records to process. If not specified, all records will be processed.
+    /// Span of records to process, as `START..END` [default: all records]
+    ///
+    /// 0-based and end-exclusive; either bound may be omitted (e.g. `100..`,
+    /// `..500`). An end past the last record is clipped.
     #[clap(long)]
     pub span: Option<Span>,
 }
@@ -268,7 +281,7 @@ impl InputBinseq {
 #[derive(Parser, Debug)]
 #[clap(next_help_heading = "INPUT FILE OPTIONS")]
 pub struct MultiInputBinseq {
-    /// Input binseq files
+    /// Input BINSEQ files; all must share the same mode and file header
     #[clap(num_args = 1..)]
     pub input: Vec<String>,
 }

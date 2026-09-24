@@ -59,7 +59,7 @@ fn determine_mode(paths: &[String]) -> Result<BinseqMode> {
 
 fn run_bq(args: CatCommand) -> Result<()> {
     let header = recover_header(&args.input.input)?;
-    let mut out_handle = args.output.as_writer()?;
+    let mut out_handle = args.output.as_writer(BinseqMode::Bq)?;
 
     header.write_bytes(&mut out_handle)?;
     for path in args.input.input {
@@ -108,7 +108,7 @@ fn record_cbq_header(paths: &[String]) -> Result<cbq::FileHeader> {
 
 fn run_cat(args: CatCommand, mode: BinseqMode) -> Result<()> {
     // initialize output handle
-    let ohandle = args.output.as_writer()?;
+    let ohandle = args.output.as_writer(mode)?;
 
     // initialize writer
     let writer = if matches!(mode, BinseqMode::Vbq) {

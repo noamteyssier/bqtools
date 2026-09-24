@@ -22,16 +22,11 @@ pub fn build_writer(args: &OutputFile, paired: bool) -> Result<SplitWriter> {
         if !paired {
             bail!("Cannot split file into two. No extended sequence channel");
         }
-        if args.mate == Mate::Both {
-            let (r1, r2) = args.as_paired_writer(format)?;
-            let split = SplitWriter::new_split(r1, r2);
-            Ok(split)
-        } else {
-            // Interleaved writer
-            let writer = args.as_writer()?;
-            let split = SplitWriter::new_interleaved(writer);
-            Ok(split)
+        if args.mate != Mate::Both {
+            bail!("`--prefix` writes both mates to separate files; use `-o` with `--mate 1|2`");
         }
+        let (r1, r2) = args.as_paired_writer(format)?;
+        Ok(SplitWriter::new_split(r1, r2))
     } else {
         if !paired {
             match args.mate {
@@ -171,6 +166,35 @@ mod tests {
             super::run(&cmd)?;
             assert_eq!(count_fastx_records(out_tmp.path())?, DEFAULT_NUM_RECORDS);
         }
+        Ok(())
+    }
+
+    /// `--prefix` with a single mate used to silently fall back to stdout.
+    #[test]
+    fn test_decode_prefix_rejects_single_mate() -> Result<()> {
+        let r1 = write_fastx().call()?;
+        let r2 = write_fastx().call()?;
+        let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
+        let cmd = crate::cli::EncodeCommand::try_parse_from([
+            "encode",
+            r1.path().to_str().unwrap(),
+            r2.path().to_str().unwrap(),
+            "-o",
+            bq_tmp.path().to_str().unwrap(),
+        ])?;
+        crate::commands::encode::run(&cmd)?;
+
+        let dir = tempfile::tempdir()?;
+        let prefix = dir.path().join("out");
+        let cmd = crate::cli::DecodeCommand::try_parse_from([
+            "decode",
+            bq_tmp.path().to_str().unwrap(),
+            "-p",
+            prefix.to_str().unwrap(),
+            "-m",
+            "1",
+        ])?;
+        assert!(super::run(&cmd).is_err());
         Ok(())
     }
 
