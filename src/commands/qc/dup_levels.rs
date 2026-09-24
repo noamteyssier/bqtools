@@ -259,9 +259,9 @@ impl DuplicationCounter {
 
 #[derive(Clone)]
 pub struct SequenceDuplicationLevels {
-    /// Only records with `index() < sample_size` are counted. `0` means
-    /// unlimited (every record is considered).
-    sample_size: usize,
+    /// Only records with `index() < sample_end` are counted, i.e. the first
+    /// `--dup-sample-size` records of the processed span. `None` means unlimited.
+    sample_end: Option<usize>,
     /// Whether to write the bucketed duplication-level report.
     emit_levels: bool,
     /// Whether to write the overrepresented-sequences report.
@@ -283,6 +283,7 @@ pub struct SequenceDuplicationLevels {
 impl Default for SequenceDuplicationLevels {
     fn default() -> Self {
         Self::new(
+            0,
             DEFAULT_DUP_SAMPLE_SIZE,
             true,
             true,
@@ -295,13 +296,15 @@ impl SequenceDuplicationLevels {
     /// underlying per-sequence counts, so this module only needs
     /// constructing once even when both reports are wanted.
     pub fn new(
+        span_start: usize,
         sample_size: usize,
         emit_levels: bool,
         emit_overrepresented: bool,
         overrepresented_threshold: f64,
     ) -> Self {
         Self {
-            sample_size,
+            // record indices are file-global, so offset the limit by the span start
+            sample_end: (sample_size > 0).then(|| span_start + sample_size),
             emit_levels,
             emit_overrepresented,
             overrepresented_threshold,
@@ -314,7 +317,10 @@ impl SequenceDuplicationLevels {
 }
 impl QcModule for SequenceDuplicationLevels {
     fn push<R: BinseqRecord>(&mut self, record: &R) {
-        if self.sample_size > 0 && record.index() as usize >= self.sample_size {
+        if self
+            .sample_end
+            .is_some_and(|end| record.index() as usize >= end)
+        {
             return;
         }
         self.t_dup.push(record.sseq());

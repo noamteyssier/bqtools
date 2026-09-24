@@ -5,9 +5,9 @@ pub mod utils;
 use std::io::Write;
 use std::thread;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use binseq::BinseqReader;
-use log::{info, warn};
+use log::info;
 
 use crate::cli::{FileFormat, PipeCommand};
 use exec::ExecMode;
@@ -38,10 +38,10 @@ pub enum PairedChannels {
 
 pub fn run(args: &PipeCommand) -> Result<()> {
     if args.input.span.is_some() {
-        warn!("Span is ignored when using pipe subcommand");
+        bail!("--span is not supported by the pipe subcommand");
     }
 
-    let format = args.format()?;
+    let format = args.format();
     let reader = BinseqReader::new(args.input.path())?;
     let num_records = reader.num_records()?;
     let paired = reader.is_paired();

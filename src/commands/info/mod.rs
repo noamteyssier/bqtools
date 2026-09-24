@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use binseq::{
     bq, cbq,
     vbq::{self, BlockIndex},
@@ -116,8 +116,8 @@ impl VbqInfo {
         println!("-------------------------------");
         println!("Bits per Nucleotide : {}", self.bitsize);
         println!("Paired              : {}", self.paired);
-        println!("Quality:            : {}", self.quality);
-        println!("Headers:            : {}", self.headers);
+        println!("Quality             : {}", self.quality);
+        println!("Headers             : {}", self.headers);
         println!("Flags               : {}", self.flags);
         println!("-------------------------------");
         println!("          Compression          ");
@@ -196,8 +196,8 @@ impl CbqInfo {
         println!("           Metadata            ");
         println!("-------------------------------");
         println!("Paired              : {}", self.paired);
-        println!("Quality:            : {}", self.quality);
-        println!("Headers:            : {}", self.headers);
+        println!("Quality             : {}", self.quality);
+        println!("Headers             : {}", self.headers);
         println!("Flags               : {}", self.flags);
         println!("-------------------------------");
         println!("          Compression          ");
@@ -309,17 +309,28 @@ where
 pub fn run(args: &InfoCommand) -> Result<()> {
     // case for just CBQ with block headers
     if args.opts.show_headers {
+        let mut num_ok = 0;
         for path in &args.input {
             let reader = match cbq::MmapReader::new(path.as_str()) {
                 Ok(reader) => reader,
                 Err(e) => {
-                    warn!("Unable to read path: {path} - {e}");
+                    warn!("Unable to read path as CBQ: {path} - {e}");
                     continue;
                 }
             };
+            num_ok += 1;
             for header in reader.iter_block_headers() {
-                println!("{:?}", header?);
+                match header {
+                    Ok(header) => println!("{header:?}"),
+                    Err(e) => {
+                        warn!("Unable to read block headers: {path} - {e}");
+                        break;
+                    }
+                }
             }
+        }
+        if num_ok == 0 {
+            bail!("No input could be read as CBQ");
         }
         return Ok(());
     }
@@ -328,15 +339,17 @@ pub fn run(args: &InfoCommand) -> Result<()> {
     let all_info: Vec<BinseqInfo> = args
         .input
         .iter()
-        .filter_map(|path| {
-            if let Ok(info) = BinseqInfo::from_path(path.as_str()) {
-                Some(info)
-            } else {
-                warn!("Unable to read path: {path}");
+        .filter_map(|path| match BinseqInfo::from_path(path.as_str()) {
+            Ok(info) => Some(info),
+            Err(e) => {
+                warn!("Unable to read path: {path} - {e}");
                 None
             }
         })
         .collect();
+    if all_info.is_empty() {
+        bail!("No input could be read as a BINSEQ file");
+    }
     if args.opts.json {
         println!("{}", serde_json::to_string_pretty(&all_info)?);
     } else if args.opts.num {

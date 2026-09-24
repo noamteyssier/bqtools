@@ -51,11 +51,14 @@ pub fn match_output<P: AsRef<Path>>(path: Option<P>) -> Result<Box<dyn Write + S
 
 #[derive(Clone, Copy, Default, Debug, clap::ValueEnum)]
 pub enum CompressionType {
+    /// Uncompressed
     #[default]
     #[value(name = "u")]
     Uncompressed,
+    /// Gzip
     #[value(name = "g")]
     Gzip,
+    /// Zstd
     #[value(name = "z")]
     Zstd,
 }

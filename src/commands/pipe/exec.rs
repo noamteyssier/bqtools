@@ -74,38 +74,30 @@ pub fn spawn_consumers(
             }
         }
         ExecMode::Batch(template) => {
+            if template.contains("{n}") {
+                warn!(
+                    "{{n}} is not expanded by --exec-batch; did you mean -x/--exec (one command per pipe)?"
+                );
+            }
             let cmd = if paired {
-                if template.contains("{n}") {
-                    warn!(
-                        "{{n}} was provided to batch exec but is not expanded to the thread pool index. did you mean to run batch?"
-                    );
-                }
-
-                // When {R1} and {R2} are adjacent in the template, expand them as
-                // interleaved pairs (r1_0 r2_0 r1_1 r2_1 …) so tools that take
-                // positional paired arguments receive each pair together.
-                // When they appear separately, expand each list independently.
-                if template.contains("{R1} {R2}") {
-                    let interleaved: Vec<_> = (0..num_pipes)
-                        .flat_map(|pid| {
-                            [
-                                name_fifo(basename, pid, RecordPair::R1, format),
-                                name_fifo(basename, pid, RecordPair::R2, format),
-                            ]
-                        })
-                        .collect();
-                    template.replace("{R1} {R2}", &interleaved.join(" "))
-                } else {
-                    let r1s: Vec<_> = (0..num_pipes)
-                        .map(|pid| name_fifo(basename, pid, RecordPair::R1, format))
-                        .collect();
-                    let r2s: Vec<_> = (0..num_pipes)
-                        .map(|pid| name_fifo(basename, pid, RecordPair::R2, format))
-                        .collect();
-                    template
-                        .replace("{R1}", &r1s.join(" "))
-                        .replace("{R2}", &r2s.join(" "))
-                }
+                let r1s: Vec<_> = (0..num_pipes)
+                    .map(|pid| name_fifo(basename, pid, RecordPair::R1, format))
+                    .collect();
+                let r2s: Vec<_> = (0..num_pipes)
+                    .map(|pid| name_fifo(basename, pid, RecordPair::R2, format))
+                    .collect();
+                // An adjacent `{R1} {R2}` expands as interleaved pairs (r1_0 r2_0 r1_1 r2_1 …)
+                // so positional paired-argument tools receive each pair together; any
+                // remaining `{R1}` / `{R2}` expand to their own space-joined lists.
+                let interleaved: Vec<_> = r1s
+                    .iter()
+                    .zip(&r2s)
+                    .flat_map(|(r1, r2)| [r1.as_str(), r2.as_str()])
+                    .collect();
+                template
+                    .replace("{R1} {R2}", &interleaved.join(" "))
+                    .replace("{R1}", &r1s.join(" "))
+                    .replace("{R2}", &r2s.join(" "))
             } else {
                 let paths: Vec<_> = (0..num_pipes)
                     .map(|pid| name_fifo(basename, pid, RecordPair::Unpaired, format))

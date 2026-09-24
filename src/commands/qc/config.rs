@@ -18,10 +18,12 @@ pub struct QcConfig {
     dup_levels: bool,
     overrepresented: bool,
     dup_sample_size: usize,
+    /// First record index processed (non-zero with `--span`).
+    span_start: usize,
     overrepresented_threshold: f64,
 }
 impl QcConfig {
-    pub fn from_opts(opts: &QcOptions) -> Self {
+    pub fn from_opts(opts: &QcOptions, span_start: usize) -> Self {
         Self {
             per_base_qual: !opts.skip_base_qual,
             per_seq_qual: !opts.skip_seq_qual,
@@ -31,6 +33,7 @@ impl QcConfig {
             dup_levels: !opts.skip_dup_levels,
             overrepresented: !opts.skip_overrepresented,
             dup_sample_size: opts.dup_sample_size,
+            span_start,
             overrepresented_threshold: opts.overrepresented_threshold,
         }
     }
@@ -56,6 +59,7 @@ impl QcConfig {
             .then(|| add_module(QcModuleType::new_seq_length()));
         if self.dup_levels || self.overrepresented {
             add_module(QcModuleType::new_duplication(
+                self.span_start,
                 self.dup_sample_size,
                 self.dup_levels,
                 self.overrepresented,

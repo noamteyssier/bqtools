@@ -10,9 +10,13 @@ use super::{InputBinseq, Mate};
 /// per-record hashes with a commutative operation (wrapping sum), so the
 /// resulting checksum is identical regardless of record order.
 ///
-/// Use this to confirm that two BINSEQ files (or two encode runs of the same
-/// input) carry the same data even if a parallel encoder wrote them in
-/// different record orders.
+/// Use this to confirm that two BINSEQ files carry the same data even if a
+/// parallel encoder wrote them in different record orders. Caveats: bq/vbq
+/// encodes of input containing `N` differ between runs under the default
+/// random N policy (use `-p a`), headers are never stored in bq files, and
+/// `--span` selects records by file position, so spans are order-dependent.
+///
+/// Prints `<16-hex checksum>\t<num_records>\t<path>`.
 #[derive(Parser, Debug)]
 pub struct VerifyCommand {
     #[clap(flatten)]
@@ -33,15 +37,20 @@ pub struct VerifyOptions {
     #[clap(long)]
     pub skip_seq: bool,
 
-    /// Exclude quality scores from the checksum
+    /// Exclude quality scores from the checksum (no effect on files without qualities)
     #[clap(long)]
     pub skip_qual: bool,
 
     /// Exclude sequence/record headers from the checksum
+    ///
+    /// Headers are automatically excluded (with a warning) for files that store
+    /// none, such as all bq files.
     #[clap(long)]
     pub skip_headers: bool,
 
-    /// Exclude the per-record flag from the checksum
+    /// Exclude the per-record flag from the checksum (no effect on files without flags)
+    ///
+    /// At least one of sequence, quality, headers, or flags must remain included.
     #[clap(long)]
     pub skip_flags: bool,
 
@@ -50,13 +59,11 @@ pub struct VerifyOptions {
     /// `1` and `both` work on single-end files (both resolve to the primary
     /// channel, which always exists). `2` errors on single-end files, since
     /// there is no extended/mate-2 channel to checksum.
-    ///
-    /// Note: `-m` is already used by `--mode` on other commands, so this
-    /// flag uses `-M` for consistency with `revcomp`.
+    // `-M` rather than `-m` for consistency with `revcomp --mate`.
     #[clap(short = 'M', long, default_value = "both")]
     pub mate: Mate,
 
-    /// Number of threads to use [0: auto]
+    /// Number of threads to use (0 = all CPUs)
     #[clap(short = 'T', long, default_value_t = 0)]
     pub threads: usize,
 

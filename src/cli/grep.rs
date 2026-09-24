@@ -8,14 +8,14 @@ use clap::Parser;
 use log::trace;
 use paraseq::{fasta, ReaderBuilder, Record};
 
-use crate::{
-    cli::FileFormat,
-    commands::grep::{Pattern, PatternCollection, SimpleRange},
-};
+use crate::commands::grep::{Pattern, PatternCollection, SimpleRange};
 
 use super::{InputBinseq, OutputFile};
 
-/// Grep a BINSEQ file and output to FASTQ or FASTA.
+/// Search a BINSEQ file for regex, fixed-string, or fuzzy patterns.
+///
+/// Matching records are written as FASTQ, FASTA, or TSV (TSV on stdout by
+/// default), or only counted with `-C`, `-F`, or `-P`.
 #[derive(Parser, Debug)]
 pub struct GrepCommand {
     #[clap(flatten)]
@@ -34,14 +34,9 @@ impl GrepCommand {
             // that colorized output highlights.
             return false;
         }
-        match self.output.format() {
-            Ok(FileFormat::Bam) => false,
-            _ => {
-                self.output.output.is_none()
-                    && self.output.prefix.is_none()
-                    && self.grep.color.should_color()
-            }
-        }
+        self.output.output.is_none()
+            && self.output.prefix.is_none()
+            && self.grep.color.should_color()
     }
 }
 
@@ -49,15 +44,18 @@ impl GrepCommand {
 #[clap(next_help_heading = "SEARCH OPTIONS")]
 #[allow(clippy::struct_excessive_bools)]
 pub struct GrepArgs {
-    /// Regex expression to search for in primary sequence
+    /// Pattern to search for in the primary sequence (repeatable)
     #[clap(short = 'r', long)]
     pub reg1: Vec<String>,
 
-    /// Regex expression to search for in extended sequence
+    /// Pattern to search for in the extended sequence (repeatable)
     #[clap(short = 'R', long)]
     pub reg2: Vec<String>,
 
-    /// Regex expression to search for in either sequence
+    /// Pattern(s) to search for in either sequence
+    ///
+    /// Multiple patterns are combined with AND logic unless `--or-logic` is set.
+    #[clap(value_name = "PATTERN")]
     pub reg: Vec<String>,
 
     /// Invert pattern criteria (like grep -v)
@@ -69,25 +67,27 @@ pub struct GrepArgs {
     /// `-r`/`--sfile` patterns match the primary header, `-R`/`--xfile` patterns
     /// match the extended header, and positional/`--file` patterns match either.
     /// Conflicts with `--rc` (reverse complement is undefined for header text)
-    /// and `--range` (which addresses sequence coordinates).
+    /// and `--range` (which addresses sequence coordinates). Colorized output is
+    /// disabled in header mode.
     #[clap(short = 'H', long, conflicts_with_all = ["rc", "range"])]
+    #[cfg_attr(feature = "fuzzy", clap(conflicts_with = "fuzzy"))]
     pub header: bool,
 
-    /// Only count matches
-    #[clap(short = 'C', long, conflicts_with = "pattern_count")]
+    /// Only print the number of matching records to stdout
+    #[clap(short = 'C', long, conflicts_with_all = ["pattern_count", "output", "prefix"])]
     pub count: bool,
 
     /// Show match count as a fraction of total records
     ///
     /// Implies --count (-C). Displays the number of matches,
     /// total records, and the fraction of records matching.
-    #[clap(short = 'F', long, conflicts_with = "pattern_count")]
+    #[clap(short = 'F', long, conflicts_with_all = ["pattern_count", "output", "prefix"])]
     pub frac: bool,
 
     /// Only match patterns that are within this range.
     ///
-    /// Will not match if the pattern is outside the range or if
-    /// the sequence cannot be sliced within the range (i.e. out of bounds).
+    /// 0-based and end-exclusive, applied to both primary and extended
+    /// sequences. Bounds past the end of a sequence are clamped to its length.
     ///
     /// Examples: --range=0..100, --range=..30, --range=60..
     #[clap(long, conflicts_with = "header")]
@@ -95,16 +95,18 @@ pub struct GrepArgs {
 
     /// Count number of matches per pattern
     ///
-    /// This will output a TSV with the number of matches per pattern.
+    /// Writes a TSV (`name`, `count`, `frac_total`) to stdout.
     /// Note that a sequence may contribute to multiple patterns counts.
-    /// A pattern will also only be counted once per sequence.
-    #[clap(short = 'P', long, conflicts_with = "count")]
+    /// A pattern will also only be counted once per sequence. With `-v`,
+    /// counts records that do NOT contain each pattern.
+    #[clap(short = 'P', long, conflicts_with_all = ["count", "output", "prefix"])]
     pub pattern_count: bool,
 
     /// Denotes patterns are fixed strings (non-regex)
     ///
     /// Allows usage of Aho-Corasick algorithm for efficient matching.
-    /// This is auto-detected when all patterns are literal strings.
+    /// Auto-detected when all patterns are uppercase ACGT. Ignored (falling
+    /// back to regex) under AND logic with 2+ patterns.
     #[clap(short = 'x', long)]
     pub fixed: bool,
 
@@ -118,21 +120,21 @@ pub struct GrepArgs {
 
     /// Build Aho-Corasick automaton without DFA
     ///
-    /// DFA uses more memory, but is significantly faster.
+    /// DFA uses more memory, but is significantly faster. Only affects
+    /// fixed-string (Aho-Corasick) matching.
     #[clap(long)]
     pub no_dfa: bool,
 
-    /// use OR logic for multiple patterns (default=AND)
+    /// Use OR logic for multiple patterns (default: AND)
+    ///
+    /// Pattern files (`--file`/`--sfile`/`--xfile`) always use OR logic.
     #[clap(long, conflicts_with = "pattern_count")]
     or_logic: bool,
 
-    /// Colorize output (auto, always, never)
-    #[clap(
-        long,
-        value_name = "WHEN",
-        default_value = "auto",
-        conflicts_with = "format"
-    )]
+    /// Colorize matches (auto, always, never)
+    ///
+    /// Only applies when writing to stdout; disabled with `-o`, `-p`, and `--header`.
+    #[clap(long, value_name = "WHEN", default_value = "auto")]
     color: ColorWhen,
 
     #[cfg(feature = "fuzzy")]
@@ -201,19 +203,20 @@ pub struct FuzzyArgs {
     /// Note that regex expressions are not supported with this flag. All
     /// patterns within a given pattern set (primary/secondary/either) must
     /// have the same length; mismatched lengths are rejected with an error.
-    #[clap(short = 'z', long)]
+    #[clap(short = 'z', long, conflicts_with = "fixed")]
     pub fuzzy: bool,
 
     /// Maximum edit distance to allow when fuzzy matching
     ///
     /// Only used with fuzzy matching
-    #[clap(short = 'k', long, default_value = "1")]
+    #[clap(short = 'k', long, default_value = "1", requires = "fuzzy")]
     pub distance: usize,
 
-    /// Only return inexact matches on fuzzy matching
+    /// Ignore exact (0-edit) hits when fuzzy matching
     ///
-    /// This will capture matches that are not exact, but are within the specified edit distance.
-    #[clap(short = 'i', long)]
+    /// Only hits within the edit distance but not exact count as matches, so a
+    /// record with only exact hits does not match.
+    #[clap(short = 'i', long, requires = "fuzzy")]
     pub inexact: bool,
 
     /// Maximum fraction of `N` bases allowed within a fuzzy match
@@ -223,7 +226,7 @@ pub struct FuzzyArgs {
     /// pattern lengths may differ. Set explicitly to override, e.g. `0.0` to
     /// reject any `N` in a match, or `1.0` to disable the filter entirely.
     /// Must be between `0.0` and `1.0` (inclusive).
-    #[clap(long, value_parser = parse_max_n_frac)]
+    #[clap(long, value_parser = parse_max_n_frac, requires = "fuzzy")]
     pub max_n_frac: Option<f32>,
 }
 

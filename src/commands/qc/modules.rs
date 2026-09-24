@@ -66,12 +66,14 @@ impl QcModuleType {
         Self::SeqLength(SequenceLengthDistribution::default())
     }
     pub fn new_duplication(
+        span_start: usize,
         sample_size: usize,
         emit_levels: bool,
         emit_overrepresented: bool,
         overrepresented_threshold: f64,
     ) -> Self {
         Self::Duplication(SequenceDuplicationLevels::new(
+            span_start,
             sample_size,
             emit_levels,
             emit_overrepresented,

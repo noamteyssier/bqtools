@@ -37,7 +37,7 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
         encode_collection(
             args.input.build_paired_collection()?,
             opath.as_deref(),
-            args.mode()?,
+            args.output.mode()?,
             args.output.options.into(),
         )
     } else if args.input.interleaved {
@@ -56,7 +56,7 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
                         .single_path()?
                         .context("Must provide an input path for HTSLib")?,
                     opath.as_deref(),
-                    args.mode()?,
+                    args.output.mode()?,
                     args.output.options.into(),
                     true,
                 )
@@ -66,7 +66,7 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
             encode_collection(
                 args.input.build_interleaved_collection()?,
                 opath.as_deref(),
-                args.mode()?,
+                args.output.mode()?,
                 args.output.options.into(),
             )
         }
@@ -85,7 +85,7 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
                     .single_path()?
                     .context("Must provide an input path for HTSlib")?,
                 opath.as_deref(),
-                args.mode()?,
+                args.output.mode()?,
                 args.output.options.into(),
                 false,
             )
@@ -95,7 +95,7 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
         encode_collection(
             args.input.build_single_collection()?,
             opath.as_deref(),
-            args.mode()?,
+            args.output.mode()?,
             args.output.options.into(),
         )
     }?;
@@ -137,7 +137,7 @@ fn process_queue(args: &EncodeCommand, queue: Vec<Vec<PathBuf>>, regex: &Regex) 
         for (i, pair) in queue.into_iter().enumerate() {
             let thread_args = args.clone();
             let thread_regex = regex.clone();
-            let mode = args.mode()?;
+            let mode = args.output.mode()?;
 
             // First `leftover_threads` files get one extra thread
             let threads_for_this_file = if i < leftover_threads {
@@ -158,8 +158,9 @@ fn process_queue(args: &EncodeCommand, queue: Vec<Vec<PathBuf>>, regex: &Regex) 
                 // it happens to contain only a single file (or file pair).
                 let collate = thread_args.input.batch_encoding_options.collate;
                 let paired = thread_args.input.batch_encoding_options.paired;
+                // `process_file_list` clears `-o` whenever it can't apply to this group.
                 let outpath = match (collate, &thread_args.output.output, pair.len()) {
-                    (true, Some(path), _) => path.clone(),
+                    (_, Some(path), _) => path.clone(),
                     (_, _, 1) => thread_regex
                         .replace_all(&inpaths[0], mode.extension())
                         .to_string(),
@@ -286,11 +287,14 @@ fn process_file_list(args: &EncodeCommand, file_queue: Vec<PathBuf>) -> Result<(
         info!("Total files found: {}", pqueue.len());
     }
 
+    // `-o` names the single output group; with multiple outputs each is auto-named.
+    let mut args = args.clone();
     if pqueue.len() > 1 && args.output.output.is_some() {
         warn!("Output path specified but ignored when batch encoding multiple files.");
+        args.output.output = None;
     }
 
-    process_queue(args, pqueue, &regex)
+    process_queue(&args, pqueue, &regex)
 }
 
 fn run_recursive(args: &EncodeCommand) -> Result<()> {
@@ -327,7 +331,9 @@ fn run_manifest(args: &EncodeCommand) -> Result<()> {
 
     let handle = File::open(manifest).map(BufReader::new)?;
     let lines = handle.lines().collect::<Result<Vec<_>, _>>()?;
+    let num_lines = lines.len();
     let file_queue = filter_valid_paths(lines.into_iter().map(PathBuf::from), &regex)?;
+    warn_skipped(num_lines, file_queue.len());
 
     process_file_list(args, file_queue)
 }
@@ -336,8 +342,19 @@ fn run_manifest_inline(args: &EncodeCommand) -> Result<()> {
     let regex = build_file_regex(args.input.batch_encoding_options.paired)?;
 
     let file_queue = filter_valid_paths(args.input.input.iter().map(PathBuf::from), &regex)?;
+    warn_skipped(args.input.num_files(), file_queue.len());
 
     process_file_list(args, file_queue)
+}
+
+/// Explicitly listed inputs that fail the extension (or `_R1/_R2`) filter are dropped.
+fn warn_skipped(num_given: usize, num_kept: usize) {
+    if num_kept < num_given {
+        warn!(
+            "Skipping {} input path(s) not matching *.{{fastq,fq,fasta,fa}}[.gz|.zst] (with _R1/_R2 if --paired)",
+            num_given - num_kept
+        );
+    }
 }
 
 pub fn run(args: &EncodeCommand) -> Result<()> {
@@ -597,6 +614,29 @@ mod tests {
                 "unexpected output written next to inputs: paired={paired} num_groups={num_groups}"
             );
         }
+        Ok(())
+    }
+
+    /// Recursive mode used to force CBQ regardless of the `-o` extension.
+    #[test]
+    fn test_recursive_collate_respects_output_extension() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        write_groups(dir.path(), false, 2)?;
+
+        let out_dir = tempfile::tempdir()?;
+        let out_path = out_dir.path().join("collated.vbq");
+        let cmd = crate::cli::EncodeCommand::try_parse_from([
+            "encode",
+            dir.path().to_str().unwrap(),
+            "--recursive",
+            "--collate",
+            "-o",
+            out_path.to_str().unwrap(),
+        ])?;
+        super::run(&cmd)?;
+
+        let reader = binseq::BinseqReader::new(out_path.to_str().unwrap())?;
+        assert!(matches!(reader, binseq::BinseqReader::Vbq(_)));
         Ok(())
     }
 }

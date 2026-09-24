@@ -12,7 +12,7 @@ use super::decode::{build_writer, write_record_pair, SplitWriter};
 struct SampleProcessor {
     /// Sampling Options
     fraction: f64,
-    rng: rand::rngs::SmallRng,
+    seed: u64,
 
     /// Local write buffers
     mixed: Vec<u8>, // General purpose, interleaved or singlets
@@ -43,7 +43,7 @@ impl SampleProcessor {
             fraction,
             format,
             mate,
-            rng: rand::rngs::SmallRng::seed_from_u64(seed),
+            seed,
             mixed: Vec::new(),
             left: Vec::new(),
             right: Vec::new(),
@@ -53,8 +53,11 @@ impl SampleProcessor {
             global_writer: Arc::new(Mutex::new(writer)),
         }
     }
-    pub fn include_record(&mut self) -> bool {
-        self.rng.random_bool(self.fraction)
+    /// Keep/drop is a pure function of `(seed, record index)`, so the sample is
+    /// reproducible regardless of thread count or batch boundaries.
+    pub fn include_record(&self, index: u64) -> bool {
+        rand::rngs::SmallRng::seed_from_u64(self.seed.wrapping_add(index))
+            .random_bool(self.fraction)
     }
 }
 impl ParallelProcessor for SampleProcessor {
@@ -62,7 +65,7 @@ impl ParallelProcessor for SampleProcessor {
         let sbuf = record.sseq();
         let xbuf = record.xseq();
 
-        if self.include_record() {
+        if self.include_record(record.index()) {
             let squal = if record.has_quality() {
                 record.squal()
             } else {
@@ -235,6 +238,47 @@ mod tests {
                 "sample fraction=1.0 should return all records for {mode:?}"
             );
         }
+        Ok(())
+    }
+
+    /// Sorted sequence lines of a FASTQ file (output order depends on batch timing).
+    fn sorted_seqs(path: &std::path::Path) -> Result<Vec<String>> {
+        let mut seqs: Vec<String> = std::fs::read_to_string(path)?
+            .lines()
+            .skip(1)
+            .step_by(4)
+            .map(String::from)
+            .collect();
+        seqs.sort_unstable();
+        Ok(seqs)
+    }
+
+    /// The same seed must select the same records regardless of `-T`.
+    #[test]
+    fn test_sample_seed_independent_of_threads() -> Result<()> {
+        let in_tmp = write_fastx().nrec(2000).call()?;
+        let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
+        encode(in_tmp.path(), bq_tmp.path())?;
+
+        let mut results = Vec::new();
+        for threads in ["1", "4"] {
+            let out_tmp = NamedTempFile::with_suffix(".fastq")?;
+            let cmd = crate::cli::SampleCommand::try_parse_from([
+                "sample",
+                bq_tmp.path().to_str().unwrap(),
+                "-F",
+                "0.3",
+                "-S",
+                "7",
+                "-T",
+                threads,
+                "-o",
+                out_tmp.path().to_str().unwrap(),
+            ])?;
+            super::run(&cmd)?;
+            results.push(sorted_seqs(out_tmp.path())?);
+        }
+        assert_eq!(results[0], results[1]);
         Ok(())
     }
 
