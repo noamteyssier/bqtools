@@ -1,13 +1,13 @@
 use anyhow::{bail, Result};
 use binseq::{BitSize, Policy};
 use clap::{
-    builder::{PossibleValue, PossibleValuesParser, TypedValueParser},
+    builder::{PossibleValuesParser, TypedValueParser},
     Parser, ValueEnum,
 };
 use std::{io::Write, path::Path};
 
 use crate::{
-    cli::FileFormat,
+    cli::{formats::format_parser, FileFormat},
     commands::{compress_passthrough, match_output, CompressionType},
 };
 
@@ -33,7 +33,7 @@ pub struct OutputFile {
     pub mate: Mate,
 
     /// Output file format [default: inferred from the output extension, else TSV]
-    #[clap(short, long, value_parser = parse_record_format())]
+    #[clap(short, long, value_parser = format_parser(&[FileFormat::Fasta, FileFormat::Fastq, FileFormat::Tsv]))]
     pub format: Option<FileFormat>,
 
     /// Compress output file [default: inferred from the output extension, else uncompressed]
@@ -94,14 +94,8 @@ impl OutputFile {
         Ok(format)
     }
 
-    /// Returns the number of threads to use.
-    ///
-    /// The default of 0 sets the maximum; all other values are clamped to the maximum.
     pub fn threads(&self) -> usize {
-        match self.threads {
-            0 => num_cpus::get(),
-            n => n.min(num_cpus::get()),
-        }
+        clamp_threads(self.threads)
     }
 
     pub fn as_paired_writer(
@@ -115,20 +109,17 @@ impl OutputFile {
 
         // Construct the output file names
         let compress = self.compress();
-        let r1_name = if let Some(ext) = compress.extension() {
-            format!("{}_R1.{}.{}", prefix, format.extension(), ext)
-        } else {
-            format!("{}_R1.{}", prefix, format.extension())
-        };
-        let r2_name = if let Some(ext) = compress.extension() {
-            format!("{}_R2.{}.{}", prefix, format.extension(), ext)
-        } else {
-            format!("{}_R2.{}", prefix, format.extension())
+        let name = |mate: &str| {
+            let base = format!("{prefix}_{mate}.{}", format.extension());
+            match compress.extension() {
+                Some(ext) => format!("{base}.{ext}"),
+                None => base,
+            }
         };
 
         // Open the output files
-        let r1 = match_output(Some(&r1_name))?;
-        let r2 = match_output(Some(&r2_name))?;
+        let r1 = match_output(Some(name("R1")))?;
+        let r2 = match_output(Some(name("R2")))?;
 
         // Compress the output files (if necessary)
         let r1 = compress_passthrough(r1, compress, self.threads())?;
@@ -151,18 +142,12 @@ pub enum Mate {
     Both,
 }
 
-/// Record output formats (`-f`) for commands writing FASTA/FASTQ/TSV.
-fn parse_record_format() -> impl TypedValueParser<Value = FileFormat> {
-    PossibleValuesParser::new([
-        PossibleValue::new("a").help("FASTA file format"),
-        PossibleValue::new("q").help("FASTQ file format"),
-        PossibleValue::new("t").help("TSV file format"),
-    ])
-    .map(|s| match s.as_str() {
-        "a" => FileFormat::Fasta,
-        "q" => FileFormat::Fastq,
-        _ => FileFormat::Tsv,
-    })
+/// 0 means all CPUs; any other value is capped at the CPU count.
+pub fn clamp_threads(n: usize) -> usize {
+    match n {
+        0 => num_cpus::get(),
+        n => n.min(num_cpus::get()),
+    }
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -242,10 +227,7 @@ impl OutputBinseqInherited {
     }
 
     pub fn threads(&self) -> usize {
-        match self.threads {
-            0 => num_cpus::get(),
-            n => n.min(num_cpus::get()),
-        }
+        clamp_threads(self.threads)
     }
 }
 
@@ -350,10 +332,7 @@ impl OutputBinseqOptions {
     }
 
     pub fn threads(&self) -> usize {
-        match self.threads {
-            0 => num_cpus::get(),
-            n => n.min(num_cpus::get()),
-        }
+        clamp_threads(self.threads)
     }
 
     pub fn bitsize(&self) -> BitSize {

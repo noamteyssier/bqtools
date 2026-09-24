@@ -2,16 +2,13 @@ use std::{path::PathBuf, str::FromStr};
 
 use anyhow::{bail, Result};
 use binseq::BinseqReader;
-use clap::{
-    builder::{PossibleValue, PossibleValuesParser, TypedValueParser},
-    Parser,
-};
+use clap::Parser;
 use log::{debug, error, warn};
 use paraseq::{fastx, ReaderBuilder};
 
 use crate::{cli::BinseqMode, types::BoxedReader};
 
-use super::FileFormat;
+use super::{formats::format_parser, FileFormat};
 
 #[derive(Parser, Debug, Clone)]
 #[clap(next_help_heading = "INPUT FILE OPTIONS")]
@@ -29,7 +26,7 @@ pub struct InputFile {
     ///
     /// FASTA/FASTQ are auto-detected. Use `b` for SAM/BAM/CRAM from stdin or with
     /// a non-standard extension (a single `.sam/.bam/.cram` path is detected).
-    #[clap(short, long, value_parser = parse_input_format())]
+    #[clap(short, long, value_parser = format_parser(&[FileFormat::Fasta, FileFormat::Fastq, FileFormat::Bam]))]
     format: Option<FileFormat>,
 
     /// Batch size (in records) to use in parallel processing
@@ -177,20 +174,6 @@ impl InputFile {
         }?;
         Ok(collection)
     }
-}
-
-/// Encode input formats (`-f`); TSV is output-only.
-fn parse_input_format() -> impl TypedValueParser<Value = FileFormat> {
-    PossibleValuesParser::new([
-        PossibleValue::new("a").help("FASTA file format"),
-        PossibleValue::new("q").help("FASTQ file format"),
-        PossibleValue::new("b").help("SAM/BAM/CRAM file format"),
-    ])
-    .map(|s| match s.as_str() {
-        "a" => FileFormat::Fasta,
-        "q" => FileFormat::Fastq,
-        _ => FileFormat::Bam,
-    })
 }
 
 fn load_reader(

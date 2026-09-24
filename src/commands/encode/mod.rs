@@ -37,7 +37,7 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
         encode_collection(
             args.input.build_paired_collection()?,
             opath.as_deref(),
-            args.mode()?,
+            args.output.mode()?,
             args.output.options.into(),
         )
     } else if args.input.interleaved {
@@ -56,7 +56,7 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
                         .single_path()?
                         .context("Must provide an input path for HTSLib")?,
                     opath.as_deref(),
-                    args.mode()?,
+                    args.output.mode()?,
                     args.output.options.into(),
                     true,
                 )
@@ -66,7 +66,7 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
             encode_collection(
                 args.input.build_interleaved_collection()?,
                 opath.as_deref(),
-                args.mode()?,
+                args.output.mode()?,
                 args.output.options.into(),
             )
         }
@@ -85,7 +85,7 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
                     .single_path()?
                     .context("Must provide an input path for HTSlib")?,
                 opath.as_deref(),
-                args.mode()?,
+                args.output.mode()?,
                 args.output.options.into(),
                 false,
             )
@@ -95,7 +95,7 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
         encode_collection(
             args.input.build_single_collection()?,
             opath.as_deref(),
-            args.mode()?,
+            args.output.mode()?,
             args.output.options.into(),
         )
     }?;
@@ -137,7 +137,7 @@ fn process_queue(args: &EncodeCommand, queue: Vec<Vec<PathBuf>>, regex: &Regex) 
         for (i, pair) in queue.into_iter().enumerate() {
             let thread_args = args.clone();
             let thread_regex = regex.clone();
-            let mode = args.mode()?;
+            let mode = args.output.mode()?;
 
             // First `leftover_threads` files get one extra thread
             let threads_for_this_file = if i < leftover_threads {

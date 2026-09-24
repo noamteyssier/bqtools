@@ -1,11 +1,8 @@
-use clap::{
-    builder::{PossibleValue, PossibleValuesParser, TypedValueParser},
-    Parser,
-};
+use clap::Parser;
 
 use crate::cli::FileFormat;
 
-use super::InputBinseq;
+use super::{formats::format_parser, output::clamp_threads, InputBinseq};
 
 /// Split a BINSEQ file into multiple named pipes (FIFOs) for legacy tools (Unix only).
 ///
@@ -31,7 +28,7 @@ pub struct PipeOptions {
     num_pipes: usize,
 
     /// Record format written to each FIFO
-    #[clap(short, long, default_value = "q", value_parser = parse_pipe_format())]
+    #[clap(short, long, default_value = "q", value_parser = format_parser(&[FileFormat::Fasta, FileFormat::Fastq]))]
     format: FileFormat,
 
     /// Base path for the FIFOs
@@ -65,30 +62,12 @@ pub struct PipeOptions {
     exec_batch: Option<String>,
 }
 
-/// Pipes only support FASTA (`a`) and FASTQ (`q`).
-fn parse_pipe_format() -> impl TypedValueParser<Value = FileFormat> {
-    PossibleValuesParser::new([
-        PossibleValue::new("a").help("FASTA file format"),
-        PossibleValue::new("q").help("FASTQ file format"),
-    ])
-    .map(|s| {
-        if s == "a" {
-            FileFormat::Fasta
-        } else {
-            FileFormat::Fastq
-        }
-    })
-}
-
 impl PipeCommand {
     pub fn format(&self) -> FileFormat {
         self.pipe.format
     }
     pub fn num_pipes(&self) -> usize {
-        match self.pipe.num_pipes {
-            0 => num_cpus::get(),
-            n => n.min(num_cpus::get()),
-        }
+        clamp_threads(self.pipe.num_pipes)
     }
     pub fn basepath(&self) -> &str {
         &self.pipe.basepath

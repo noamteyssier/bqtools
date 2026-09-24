@@ -3,7 +3,7 @@ use log::{error, trace};
 
 use crate::commands::encode::utils::generate_output_name;
 
-use super::{BinseqMode, InputFile, OutputBinseq};
+use super::{InputFile, OutputBinseq};
 
 #[derive(clap::Parser, Debug, Clone)]
 /// Encode FASTQ, FASTA, or SAM/BAM/CRAM files to BINSEQ.
@@ -15,9 +15,6 @@ pub struct EncodeCommand {
     pub output: OutputBinseq,
 }
 impl EncodeCommand {
-    pub fn mode(&self) -> Result<BinseqMode> {
-        self.output.mode()
-    }
     pub fn output_path(&self) -> Result<Option<String>> {
         if let Some(path) = &self.output.output {
             Ok(Some(path.clone()))
@@ -32,10 +29,10 @@ impl EncodeCommand {
         } else {
             let outpath = if self.input.paired() {
                 let (r1, r2) = self.input.paired_paths()?;
-                generate_output_name(&[r1.into(), r2.into()], self.mode()?.extension())?
+                generate_output_name(&[r1.into(), r2.into()], self.output.mode()?.extension())?
             } else {
                 let path = self.input.single_path()?.unwrap();
-                generate_output_name(&[path.into()], self.mode()?.extension())?
+                generate_output_name(&[path.into()], self.output.mode()?.extension())?
             };
             trace!("Auto-determined outpath path: {outpath}");
             Ok(Some(outpath))

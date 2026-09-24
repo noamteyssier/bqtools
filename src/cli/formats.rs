@@ -1,4 +1,13 @@
-use clap::ValueEnum;
+use clap::{
+    builder::{PossibleValuesParser, TypedValueParser},
+    ValueEnum,
+};
+
+/// `-f` parser restricted to the formats a command supports.
+pub fn format_parser(allowed: &'static [FileFormat]) -> impl TypedValueParser<Value = FileFormat> {
+    PossibleValuesParser::new(allowed.iter().filter_map(ValueEnum::to_possible_value))
+        .map(|s| FileFormat::from_str(&s, true).unwrap())
+}
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileFormat {
