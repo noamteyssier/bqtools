@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use log::{debug, error};
+use log::debug;
 
 use crate::cli::Mate;
 
@@ -155,7 +155,6 @@ impl PatternSets {
         drop.clear();
         keep.ingest(&mut self.pat);
         if keep.is_empty() {
-            error!("No patterns provided for mate {n}");
             bail!("No patterns provided for mate {n}");
         }
         Ok(())

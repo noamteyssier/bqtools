@@ -405,6 +405,13 @@ fn rejected_invocations() {
     fails(false, &[]); // no patterns
     fails(false, &["-m", "1", "-R", "GATTA"]); // nothing left for mate 1
     fails(false, &["-m", "2", "-r", "GATTA"]); // nothing left for mate 2
+    fails(true, &["-R", "GATTA"]); // no extended mate to search
+    fails(true, &["-r", "GATTA", "-R", "CCCC"]);
+    fails(true, &["-m", "1", "-R", "GATTA"]);
+    let xfile = fx.file("x.txt", "GATTA\n");
+    fails(true, &["--xfile", &xfile]);
+    // primary and either patterns stay valid on single-end input
+    assert_eq!(fx.ok(true, &["--sfile", &xfile]), "r1\tGATTACAGAT\n");
     fails(false, &["A("]); // invalid regex
     fails(false, &["--rc", "AC.GT"]); // rc needs fixed ACGT
     fails(false, &["-C", "-P", "GATTA"]); // exclusive modes
@@ -415,5 +422,3 @@ fn rejected_invocations() {
 // Known backend divergences, deliberately NOT pinned (revisit when unifying):
 // * regex under OR stops at the first matching pattern, so only that
 //   pattern's hits are highlighted; Aho-Corasick and fuzzy highlight all.
-// * `-P -v` on an empty secondary sequence: regex/Aho-Corasick skip the set,
-//   fuzzy counts it.

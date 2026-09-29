@@ -24,7 +24,7 @@ use crate::{
     commands::{decode::SplitWriter, grep::filter::AhoCorasickMatcher},
 };
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use binseq::prelude::*;
 
 fn load_patterns(args: &GrepCommand, paired: bool) -> Result<PatternSets> {
@@ -34,9 +34,12 @@ fn load_patterns(args: &GrepCommand, paired: bool) -> Result<PatternSets> {
         pat: args.grep.patterns()?,
     };
     // `--mate` is meaningless on single-end files (and `-m 2` would route every
-    // pattern to the empty extended sequence).
+    // pattern to the empty extended sequence), and extended-only patterns can
+    // never match, so single-end input never carries an extended pattern set.
     if paired {
         patterns.redistribute(args.output.mate)?;
+    } else if !patterns.pat2.is_empty() {
+        bail!("-R/--xfile patterns require paired input");
     }
     if args.grep.rc {
         patterns.reverse_complement()?;

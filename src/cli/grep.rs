@@ -49,6 +49,8 @@ pub struct GrepArgs {
     pub reg1: Vec<String>,
 
     /// Pattern to search for in the extended sequence (repeatable)
+    ///
+    /// Paired input only; rejected for single-end files.
     #[clap(short = 'R', long)]
     pub reg2: Vec<String>,
 
@@ -294,6 +296,8 @@ pub struct PatternFileArgs {
     pub sfile: Option<String>,
 
     /// File of patterns to search for in extended sequence
+    ///
+    /// Paired input only; rejected for single-end grep.
     ///
     /// Accepts a plain text file (one pattern per line), a FASTA file
     /// (sequences are used as patterns), or TSV (alias / pattern).
