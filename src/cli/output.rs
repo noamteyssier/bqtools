@@ -144,9 +144,10 @@ pub enum Mate {
 
 /// 0 means all CPUs; any other value is capped at the CPU count.
 pub fn clamp_threads(n: usize) -> usize {
+    let cpus = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     match n {
-        0 => num_cpus::get(),
-        n => n.min(num_cpus::get()),
+        0 => cpus,
+        n => n.min(cpus),
     }
 }
 

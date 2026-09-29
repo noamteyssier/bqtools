@@ -217,7 +217,6 @@ dependencies = [
  "memmap2",
  "niffler",
  "nix",
- "num_cpus",
  "paraseq",
  "parking_lot",
  "rand",
