@@ -397,70 +397,47 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_vbq_specialization() -> Result<()> {
-        for (fmt, comp, uncompressed, skip_qual) in iproduct!(
+    /// Encodes every format/compression with each subset of `flags` and checks the record count.
+    fn check_specialization(ext: &str, flags: [&str; 2]) -> Result<()> {
+        for (fmt, comp, first, second) in iproduct!(
             FileFormat::fastx_iter(),
             Compression::all(),
             [false, true],
             [false, true],
         ) {
             let in_tmp = write_fastx().format(fmt).comp(comp).call()?;
-            let out_tmp = NamedTempFile::with_suffix(".vbq")?;
+            let out_tmp = NamedTempFile::with_suffix(ext)?;
             let mut args = vec![
                 "encode",
                 in_tmp.path().to_str().unwrap(),
                 "-o",
                 out_tmp.path().to_str().unwrap(),
             ];
-            if uncompressed {
-                args.push("--uncompressed");
-            }
-            if skip_qual {
-                args.push("--skip-quality");
-            }
+            let used: Vec<_> = flags
+                .into_iter()
+                .zip([first, second])
+                .filter_map(|(flag, on)| on.then_some(flag))
+                .collect();
+            args.extend(&used);
             let cmd = crate::cli::EncodeCommand::try_parse_from(args)?;
             super::run(&cmd)?;
             assert_eq!(
                 count_binseq(out_tmp.path())?,
                 DEFAULT_NUM_RECORDS,
-                "vbq count wrong: {fmt:?} {comp:?} uncompressed={uncompressed} skip_qual={skip_qual}"
+                "{ext} count wrong: {fmt:?} {comp:?} flags={used:?}"
             );
         }
         Ok(())
     }
 
     #[test]
+    fn test_vbq_specialization() -> Result<()> {
+        check_specialization(".vbq", ["--uncompressed", "--skip-quality"])
+    }
+
+    #[test]
     fn test_cbq_specialization() -> Result<()> {
-        for (fmt, comp, skip_qual, skip_headers) in iproduct!(
-            FileFormat::fastx_iter(),
-            Compression::all(),
-            [false, true],
-            [false, true],
-        ) {
-            let in_tmp = write_fastx().format(fmt).comp(comp).call()?;
-            let out_tmp = NamedTempFile::with_suffix(".cbq")?;
-            let mut args = vec![
-                "encode",
-                in_tmp.path().to_str().unwrap(),
-                "-o",
-                out_tmp.path().to_str().unwrap(),
-            ];
-            if skip_qual {
-                args.push("--skip-quality");
-            }
-            if skip_headers {
-                args.push("--skip-headers");
-            }
-            let cmd = crate::cli::EncodeCommand::try_parse_from(args)?;
-            super::run(&cmd)?;
-            assert_eq!(
-                count_binseq(out_tmp.path())?,
-                DEFAULT_NUM_RECORDS,
-                "cbq count wrong: {fmt:?} {comp:?} skip_qual={skip_qual} skip_headers={skip_headers}"
-            );
-        }
-        Ok(())
+        check_specialization(".cbq", ["--skip-quality", "--skip-headers"])
     }
 
     #[test]
