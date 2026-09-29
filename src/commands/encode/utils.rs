@@ -1,8 +1,8 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::LazyLock};
 
 use anyhow::{bail, Context, Result};
 use hashbrown::HashMap;
-use log::{error, warn};
+use log::warn;
 use paraseq::{fastx, Record};
 use regex::Regex;
 
@@ -117,74 +117,46 @@ pub fn pair_r1_r2_files(files: &[PathBuf]) -> Result<Vec<Vec<PathBuf>>> {
 /// For single files: removes the original extension and replaces with new extension
 /// For paired files: extracts the base name + suffix (everything except _R[12]) and adds new extension
 pub fn generate_output_name(input_files: &[PathBuf], new_extension: &str) -> Result<String> {
-    match input_files.len() {
-        1 => {
-            // Single file: just replace the extension
-            let input_path = input_files[0].to_str().unwrap();
-            let extension_regex =
-                Regex::new(r"\.(?:fastq|fq|fasta|fa|sam|bam|cram)(?:\.gz|\.zst)?$")?;
-            let output_name = extension_regex
-                .replace(input_path, new_extension)
-                .to_string();
-            if output_name == input_path {
-                error!("Unable to autodetermine the output filename for {input_path}");
-                bail!("Unable to autodetermine the output filename for {input_path}");
-            }
-            Ok(output_name)
-        }
-        2 => {
-            // Paired files: extract base name + suffix, excluding _R[12]
-            let input_path = input_files[0].to_str().unwrap();
-            let pair_regex =
-                Regex::new(r"^(.+)_R[12](_[^.]*)?\.(?:fastq|fq|fasta|fa)(?:\.gz|\.zst)?$")?;
+    static PAIR: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(.+)_R[12](_[^.]*)?\.(?:fastq|fq|fasta|fa)(?:\.gz|\.zst)?$").unwrap()
+    });
+    static FASTX_EXT: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\.(?:fastq|fq|fasta|fa)(?:\.gz|\.zst)?$").unwrap());
+    static ANY_EXT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\.(?:fastq|fq|fasta|fa|sam|bam|cram)(?:\.gz|\.zst)?$").unwrap()
+    });
 
-            if let Some(caps) = pair_regex.captures(input_path) {
-                let base = &caps[1];
-                let suffix = caps.get(2).map_or("", |m| m.as_str());
-                let output_name = format!("{base}{suffix}{new_extension}");
-                if output_name == input_path {
-                    error!("Unable to autodetermine the output filename for {input_path}");
-                    bail!("Unable to autodetermine the output filename for {input_path}");
-                }
-                Ok(output_name)
-            } else {
-                // Fallback: use the first file's name with extension replaced
-                let extension_regex = Regex::new(r"\.(?:fastq|fq|fasta|fa)(?:\.gz|\.zst)?$")?;
-                let output_name = extension_regex
-                    .replace(input_path, new_extension)
-                    .to_string();
-                if output_name == input_path {
-                    error!("Unable to autodetermine the output filename for {input_path}");
-                    bail!("Unable to autodetermine the output filename for {input_path}");
-                }
-                Ok(output_name)
-            }
-        }
-        _ => bail!("Invalid number of input files: {}", input_files.len()),
+    let paired = match input_files.len() {
+        1 => false,
+        2 => true,
+        n => bail!("Invalid number of input files: {n}"),
+    };
+    let input_path = input_files[0].to_str().unwrap();
+    let output_name = if let Some(caps) = PAIR.captures(input_path).filter(|_| paired) {
+        let suffix = caps.get(2).map_or("", |m| m.as_str());
+        format!("{}{suffix}{new_extension}", &caps[1])
+    } else {
+        let regex = if paired { &FASTX_EXT } else { &ANY_EXT };
+        regex.replace(input_path, new_extension).into_owned()
+    };
+    if output_name == input_path {
+        bail!("Unable to autodetermine the output filename for {input_path}");
     }
+    Ok(output_name)
 }
 
-pub fn pull_single_files(input_files: &[PathBuf]) -> Result<Vec<Vec<PathBuf>>> {
-    let mut num_suspect = 0;
-    let pair_regex = Regex::new(r".+_R[12].+")?;
-    let mut pqueue = Vec::new();
-    for file in input_files {
-        let file_str = file.to_str().unwrap();
-        if pair_regex.is_match(file_str) {
-            num_suspect += 1;
-        }
-        pqueue.push(vec![file.to_owned()]);
-    }
+pub fn pull_single_files(input_files: &[PathBuf]) -> Vec<Vec<PathBuf>> {
+    static PAIR_LIKE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r".+_R[12].+").unwrap());
+    let num_suspect = input_files
+        .iter()
+        .filter(|file| PAIR_LIKE.is_match(file.to_str().unwrap()))
+        .count();
     if num_suspect > 0 {
         warn!(
             "Found {num_suspect} files that may be paired but are not. If this is not intentional, consider adding the `--paired` flag."
         );
     }
-    Ok(pqueue)
-}
-
-pub fn collate_groups(pqueue: &[Vec<PathBuf>]) -> Vec<Vec<PathBuf>> {
-    vec![pqueue.iter().flatten().cloned().collect()]
+    input_files.iter().map(|file| vec![file.clone()]).collect()
 }
 
 #[cfg(test)]
@@ -319,5 +291,130 @@ mod tests {
         assert_eq!(output1, "library_A_lane1.encoded");
         assert_eq!(output2, "library_A_lane2.encoded");
         assert_ne!(output1, output2); // Ensure they're different
+    }
+
+    /// Expected output name, or `Err(message)` for names that cannot be determined.
+    fn check_names(cases: &[(&[&str], &str, Result<&str, &str>)]) {
+        for (inputs, ext, expected) in cases {
+            let files: Vec<PathBuf> = inputs.iter().map(PathBuf::from).collect();
+            let got = generate_output_name(&files, ext).map_err(|e| e.to_string());
+            let expected = expected.map(str::to_string).map_err(str::to_string);
+            assert_eq!(got, expected, "inputs={inputs:?} ext={ext}");
+        }
+    }
+
+    #[test]
+    fn test_generate_output_name_single_cases() {
+        check_names(&[
+            (&["a.fq"], ".cbq", Ok("a.cbq")),
+            (&["a.fasta"], ".vbq", Ok("a.vbq")),
+            (&["a.fa"], ".bq", Ok("a.bq")),
+            (&["a.fa.zst"], ".bq", Ok("a.bq")),
+            (&["a.fastq.gz"], ".cbq", Ok("a.cbq")),
+            (&["dir.v1/a.b.fq.gz"], ".cbq", Ok("dir.v1/a.b.cbq")),
+            // `_R1` is not stripped for single inputs
+            (&["a_R1.fq"], ".cbq", Ok("a_R1.cbq")),
+            // the extension is only replaced at the end of the name
+            (&["a.fq.txt.fq"], ".cbq", Ok("a.fq.txt.cbq")),
+            (&["a.sam"], ".cbq", Ok("a.cbq")),
+            (&["a.bam"], ".cbq", Ok("a.cbq")),
+            (&["a.cram"], ".cbq", Ok("a.cbq")),
+            (&["a.bam.gz"], ".cbq", Ok("a.cbq")),
+            // unchanged: nothing to replace
+            (
+                &["a.txt"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for a.txt"),
+            ),
+            (
+                &["a.FQ"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for a.FQ"),
+            ),
+            (
+                &["a.fq.bz2"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for a.fq.bz2"),
+            ),
+            (
+                &["fq"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for fq"),
+            ),
+            (
+                &["a.cbq"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for a.cbq"),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn test_generate_output_name_paired_cases() {
+        check_names(&[
+            (&["s_R1.fq", "s_R2.fq"], ".cbq", Ok("s.cbq")),
+            (&["s_R2.fq", "s_R1.fq"], ".cbq", Ok("s.cbq")),
+            (
+                &["d/s_R1.fastq.gz", "d/s_R2.fastq.gz"],
+                ".vbq",
+                Ok("d/s.vbq"),
+            ),
+            (&["s_R1.fa.zst", "s_R2.fa.zst"], ".bq", Ok("s.bq")),
+            (&["s_R1_001.fq", "s_R2_001.fq"], ".cbq", Ok("s_001.cbq")),
+            (&["s_R1_a_b.fq", "s_R2_a_b.fq"], ".cbq", Ok("s_a_b.cbq")),
+            // the last `_R[12]` that leaves a dot-free suffix is the one stripped
+            (&["a_R1_R2.fq", "a_R2_R2.fq"], ".cbq", Ok("a_R1.cbq")),
+            (&["a_R1_x_R2_y.fq", "b"], ".cbq", Ok("a_R1_x_y.cbq")),
+            // only the first file is inspected
+            (&["s_R1.fq", "other.txt"], ".cbq", Ok("s.cbq")),
+            // no `_R[12]` (or a dotted suffix): fall back to swapping the extension
+            (&["s_1.fq", "s_2.fq"], ".cbq", Ok("s_1.cbq")),
+            (&["s.fq.gz", "t.fq.gz"], ".cbq", Ok("s.cbq")),
+            (&["a_R1_x.y.fq", "a_R2_x.y.fq"], ".cbq", Ok("a_R1_x.y.cbq")),
+            (
+                &["/t/x_R1/a.fq", "/t/x_R2/a.fq"],
+                ".cbq",
+                Ok("/t/x_R1/a.cbq"),
+            ),
+            // the fallback does not know about sam/bam/cram
+            (
+                &["s_R1.bam", "s_R2.bam"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for s_R1.bam"),
+            ),
+            (
+                &["s.sam", "t.sam"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for s.sam"),
+            ),
+            (
+                &["s_R1.txt", "s_R2.txt"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for s_R1.txt"),
+            ),
+            (
+                &["s_R1.FQ", "s_R2.FQ"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for s_R1.FQ"),
+            ),
+            // the stripped name equals the input
+            (
+                &["s_R1.fq", "s_R2.fq"],
+                "_R1.fq",
+                Err("Unable to autodetermine the output filename for s_R1.fq"),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn test_generate_output_name_invalid_count() {
+        for n in [0, 3] {
+            let files = vec![PathBuf::from("a.fq"); n];
+            let err = generate_output_name(&files, ".cbq").unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("Invalid number of input files: {n}")
+            );
+        }
     }
 }
