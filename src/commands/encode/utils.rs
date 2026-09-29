@@ -1,6 +1,6 @@
-use std::{io::Read, path::PathBuf};
+use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use hashbrown::HashMap;
 use log::{error, warn};
 use paraseq::{fastx, Record};
@@ -9,66 +9,52 @@ use regex::Regex;
 #[cfg(feature = "htslib")]
 use paraseq::rust_htslib::{self, bam::Read as BamRead};
 
-type BoxReader = Box<dyn Read + Send>;
+use crate::types::BoxedReader;
 
-pub fn get_sequence_len(reader: &mut fastx::Reader<BoxReader>) -> Result<u32> {
-    let mut rset = reader.new_record_set_with_size(1);
-    let slen = if rset.fill(reader)? {
-        let record = if let Some(record) = rset.iter().next() {
-            record?
-        } else {
-            bail!("Input file is empty - cannot convert");
-        };
-        record.seq().len()
-    } else {
-        bail!("Input file is empty - cannot convert");
-    };
+/// Sequence lengths of (up to) the first `n` records of a reader.
+///
+/// The result is empty if the reader has no data, and shorter than `n` if it has fewer records.
+fn first_lens(reader: &mut fastx::Reader<BoxedReader>, n: usize) -> Result<Vec<u32>> {
+    let mut rset = reader.new_record_set_with_size(n);
+    if !rset.fill(reader)? {
+        return Ok(Vec::new());
+    }
+    let lens = rset
+        .iter()
+        .take(n)
+        .map(|record| Ok(record?.seq().len() as u32))
+        .collect::<Result<Vec<_>>>()?;
     reader.reload(&mut rset)?;
-    Ok(slen as u32)
+    Ok(lens)
+}
+
+pub fn get_sequence_len(reader: &mut fastx::Reader<BoxedReader>) -> Result<u32> {
+    first_lens(reader, 1)?
+        .first()
+        .copied()
+        .context("Input file is empty - cannot convert")
 }
 
 #[cfg(feature = "htslib")]
 pub fn get_sequence_len_htslib(path: &str, paired: bool) -> Result<(u32, u32)> {
     let mut reader = rust_htslib::bam::Reader::from_path(path)?;
-    let mut slen = 0;
-    let mut xlen = 0;
-
-    let mut rc_records = reader.rc_records();
-
-    if let Some(res) = rc_records.next() {
-        let rec = res?;
-        slen = rec.seq_len();
-    }
-
-    if paired {
-        if let Some(res) = rc_records.next() {
-            let rec = res?;
-            xlen = rec.seq_len();
-        }
-    }
-    Ok((slen as u32, xlen as u32))
+    let lens = reader
+        .rc_records()
+        .take(1 + usize::from(paired))
+        .map(|res| res.map(|rec| rec.seq_len() as u32))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((
+        lens.first().copied().unwrap_or(0),
+        lens.get(1).copied().unwrap_or(0),
+    ))
 }
 
-pub fn get_interleaved_sequence_len(reader: &mut fastx::Reader<BoxReader>) -> Result<(u32, u32)> {
-    let mut rset = reader.new_record_set_with_size(2);
-    let (slen, xlen) = if rset.fill(reader)? {
-        let mut rset_iter = rset.iter();
-        let r1 = if let Some(record) = rset_iter.next() {
-            record?
-        } else {
-            bail!("Input file is empty - cannot convert");
-        };
-        let r2 = if let Some(record) = rset_iter.next() {
-            record?
-        } else {
-            bail!("Input file is empty - cannot convert");
-        };
-        (r1.seq().len(), r2.seq().len())
-    } else {
-        bail!("Input file (interleaved) is missing R2 - cannot convert");
-    };
-    reader.reload(&mut rset)?;
-    Ok((slen as u32, xlen as u32))
+pub fn get_interleaved_sequence_len(reader: &mut fastx::Reader<BoxedReader>) -> Result<(u32, u32)> {
+    match first_lens(reader, 2)?[..] {
+        [slen, xlen] => Ok((slen, xlen)),
+        [] => bail!("Input file (interleaved) is missing R2 - cannot convert"),
+        _ => bail!("Input file is empty - cannot convert"),
+    }
 }
 
 /// Pairs R1/R2 files from a list of file paths efficiently using a `HashMap`
