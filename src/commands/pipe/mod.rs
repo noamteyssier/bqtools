@@ -11,7 +11,7 @@ use log::info;
 use crate::cli::{FileFormat, PipeCommand};
 use exec::ExecMode;
 use processor::PipeProcessor;
-use utils::{create_fifos, FifoGuard};
+use utils::{create_fifos, pairs, FifoGuard};
 
 /// Simple enum to represent the type of record pair to process.
 #[derive(Clone, Copy, Debug)]
@@ -50,7 +50,8 @@ pub fn run(args: &PipeCommand) -> Result<()> {
 
     // Validate exec templates before creating FIFOs so a bad template fails fast
     // rather than leaving an open FIFO with no reader (which would hang).
-    if let Some(t) = args.exec().or_else(|| args.exec_batch()) {
+    let tmpl = args.exec().or(args.exec_batch());
+    if let Some(t) = tmpl {
         exec::validate_template(t, paired)?;
     }
 
@@ -59,9 +60,7 @@ pub fn run(args: &PipeCommand) -> Result<()> {
     // FIFO and writer entirely. Without exec, both channels are always created.
     // Only meaningful for paired files; unpaired always uses a single unlabelled FIFO.
     let channels = if paired {
-        args.exec()
-            .or_else(|| args.exec_batch())
-            .map_or(PairedChannels::Both, exec::required_channels)
+        tmpl.map_or(PairedChannels::Both, exec::required_channels)
     } else {
         PairedChannels::Both
     };
@@ -100,34 +99,13 @@ pub fn run(args: &PipeCommand) -> Result<()> {
             rstart + records_per_pipe
         };
 
-        if paired {
-            if matches!(channels, PairedChannels::Both | PairedChannels::R1Only) {
-                handles.push(spawn_pipe_thread(
-                    basename.to_string(),
-                    args.input.path().to_string(),
-                    pid,
-                    format,
-                    RecordPair::R1,
-                    rstart..rend,
-                ));
-            }
-            if matches!(channels, PairedChannels::Both | PairedChannels::R2Only) {
-                handles.push(spawn_pipe_thread(
-                    basename.to_string(),
-                    args.input.path().to_string(),
-                    pid,
-                    format,
-                    RecordPair::R2,
-                    rstart..rend,
-                ));
-            }
-        } else {
+        for &pair in pairs(paired, channels) {
             handles.push(spawn_pipe_thread(
                 basename.to_string(),
                 args.input.path().to_string(),
                 pid,
                 format,
-                RecordPair::Unpaired,
+                pair,
                 rstart..rend,
             ));
         }
