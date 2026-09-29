@@ -7,6 +7,7 @@ use std::{
 #[cfg(feature = "fuzzy")]
 use anyhow::bail;
 use anyhow::Result;
+use binseq::{BinseqReader, BinseqWriterBuilder};
 use gzp::{
     deflate::Gzip,
     par::compress::{ParCompress, ParCompressBuilder},
@@ -24,6 +25,15 @@ pub fn match_output<P: AsRef<Path>>(path: Option<P>) -> Result<Box<dyn Write + S
         Box::new(io::stdout())
     };
     Ok(Box::new(BufWriter::new(inner)))
+}
+
+/// Builds a writer that mirrors the input file's own header/configuration.
+pub fn builder_from_reader(reader: &BinseqReader) -> BinseqWriterBuilder {
+    match reader {
+        BinseqReader::Bq(r) => BinseqWriterBuilder::from_bq_header(r.header()),
+        BinseqReader::Vbq(r) => BinseqWriterBuilder::from_vbq_header(r.header()),
+        BinseqReader::Cbq(r) => BinseqWriterBuilder::from_cbq_header(r.header()),
+    }
 }
 
 #[derive(Clone, Copy, Default, Debug, clap::ValueEnum)]

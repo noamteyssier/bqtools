@@ -1,31 +1,14 @@
 mod processor;
 
 use anyhow::Result;
-use binseq::{bq, cbq, vbq, BinseqReader, BinseqWriterBuilder, ParallelReader};
+use binseq::{BinseqReader, ParallelReader};
 use log::{info, warn};
 
-use crate::cli::{BinseqMode, Mate, RevcompCommand};
+use crate::{
+    cli::{Mate, RevcompCommand},
+    commands::utils::builder_from_reader,
+};
 use processor::RevCompProcessor;
-
-/// Builds a writer that mirrors the input file's own header/configuration,
-/// since reverse complementing changes sequence content but not schema.
-fn get_builder(args: &RevcompCommand) -> Result<BinseqWriterBuilder> {
-    let builder = match args.input.mode()? {
-        BinseqMode::Bq => {
-            let reader = bq::MmapReader::new(args.input.path())?;
-            BinseqWriterBuilder::from_bq_header(reader.header())
-        }
-        BinseqMode::Vbq => {
-            let reader = vbq::MmapReader::new(args.input.path())?;
-            BinseqWriterBuilder::from_vbq_header(reader.header())
-        }
-        BinseqMode::Cbq => {
-            let reader = cbq::MmapReader::new(args.input.path())?;
-            BinseqWriterBuilder::from_cbq_header(reader.header())
-        }
-    };
-    Ok(builder)
-}
 
 pub fn run(args: &RevcompCommand) -> Result<()> {
     let reader = BinseqReader::new(args.input.path())?;
@@ -36,7 +19,7 @@ pub fn run(args: &RevcompCommand) -> Result<()> {
         args.mate
     };
 
-    let builder = get_builder(args)?;
+    let builder = builder_from_reader(&reader);
     let ohandle = args.output.as_writer(args.input.mode()?)?;
     let writer = builder.build(ohandle)?;
     let mut processor = RevCompProcessor::new(writer, mate)?;
