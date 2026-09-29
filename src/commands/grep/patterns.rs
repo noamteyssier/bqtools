@@ -95,12 +95,7 @@ impl PatternCollection {
 
     /// Takes all patterns from `other` and moves them into this collection.
     pub fn ingest(&mut self, other: &mut Self) {
-        self.0.extend(other.drain());
-    }
-
-    /// Drains all patterns from this collection, returning an iterator over them.
-    pub fn drain(&mut self) -> impl Iterator<Item = Pattern> + '_ {
-        self.0.drain(..)
+        self.0.append(&mut other.0);
     }
 
     /// Clears all patterns from this collection.
