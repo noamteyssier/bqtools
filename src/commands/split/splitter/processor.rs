@@ -1,26 +1,26 @@
 use std::{
+    fs::File,
+    io::BufWriter,
     io::{stderr, Write},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use anyhow::{bail, Result};
 use binseq::{BinseqWriter, BinseqWriterBuilder, ParallelProcessor, SequencingRecordBuilder};
-use std::sync::Mutex;
 
-use crate::{
-    cli::SplitCommand,
-    commands::{match_output, split::splitter::Splitter},
-    types::BoxedWriter,
-};
+use crate::{cli::SplitCommand, commands::split::splitter::Splitter, types::BoxedWriter};
 
 #[derive(Clone)]
 pub struct SplitProcessor {
     /// Thread-local matcher
     matcher: Splitter,
 
-    /// Whether the undetermined writer is active
-    write_undetermined: bool,
+    /// Index of the undetermined writer (always last), if active
+    undetermined_idx: Option<usize>,
 
     /// Thread-local writers for the split processor.
     t_writer: Vec<BinseqWriter<Vec<u8>>>,
@@ -28,13 +28,10 @@ pub struct SplitProcessor {
 
     /// Global writers for the split processor.
     writer: Arc<Vec<Mutex<BinseqWriter<BoxedWriter>>>>,
-    counts: Arc<Vec<Mutex<usize>>>,
+    counts: Arc<Vec<AtomicUsize>>,
 
-    /// Aliases for each output bin (excludes the undetermined writer).
+    /// Name of each output bin, with the undetermined bin last when active.
     aliases: Vec<String>,
-
-    /// Basename of the undetermined output (used in the summary).
-    undetermined_name: String,
 
     /// Output file path for each writer (parallel to `writer`/`counts`).
     paths: Vec<PathBuf>,
@@ -45,56 +42,46 @@ impl SplitProcessor {
         builder: &BinseqWriterBuilder,
         args: &SplitCommand,
     ) -> Result<Self> {
-        let output_basepath = &args.split.basepath;
         let output_mode = args.input.mode()?;
         let write_undetermined = !args.split.skip_unmatched;
         let undetermined_basepath = args.split.unmatched_basename.as_str();
-        let mut t_writer = Vec::default();
-        let mut writer = Vec::default();
-        let mut paths = Vec::default();
 
-        let mut extend_writers = |basename| -> Result<()> {
-            let output_path =
-                Path::new(output_basepath).join(format!("{}{}", basename, output_mode.extension()));
-            let output_handle = match_output(Some(output_path.clone()))?;
-
-            let gw = builder.clone().build(output_handle)?;
-            let tw = gw.new_headless_buffer()?;
-
-            t_writer.push(tw);
-            writer.push(Mutex::new(gw));
-            paths.push(output_path);
-
-            Ok(())
-        };
-
-        let aliases = matcher.aliases().to_vec();
+        let mut aliases = matcher.aliases().to_vec();
         if write_undetermined && aliases.iter().any(|a| a == undetermined_basepath) {
             bail!(
                 "Pattern alias '{undetermined_basepath}' collides with the unmatched output name; set --unmatched-basename to something else"
             );
         }
-        aliases
-            .iter()
-            .map(String::as_str)
-            .try_for_each(&mut extend_writers)?;
-
+        let undetermined_idx = write_undetermined.then_some(aliases.len());
         if write_undetermined {
-            extend_writers(undetermined_basepath)?;
+            aliases.push(undetermined_basepath.to_string());
         }
 
-        let t_counts = vec![0; t_writer.len()];
-        let counts = Arc::new((0..writer.len()).map(|_| Mutex::new(0)).collect::<Vec<_>>());
+        let mut t_writer = Vec::default();
+        let mut writer = Vec::default();
+        let mut paths = Vec::default();
+        for basename in &aliases {
+            let output_path = Path::new(&args.split.basepath).join(format!(
+                "{}{}",
+                basename,
+                output_mode.extension()
+            ));
+            let output_handle: BoxedWriter = Box::new(BufWriter::new(File::create(&output_path)?));
+
+            let gw = builder.clone().build(output_handle)?;
+            t_writer.push(gw.new_headless_buffer()?);
+            writer.push(Mutex::new(gw));
+            paths.push(output_path);
+        }
 
         Ok(Self {
             matcher,
-            write_undetermined,
+            undetermined_idx,
+            t_counts: vec![0; writer.len()],
+            counts: Arc::new((0..writer.len()).map(|_| AtomicUsize::new(0)).collect()),
             t_writer,
-            t_counts,
             writer: Arc::new(writer),
-            counts,
             aliases,
-            undetermined_name: undetermined_basepath.to_string(),
             paths,
         })
     }
@@ -114,7 +101,7 @@ impl SplitProcessor {
         for (path, count) in self
             .paths
             .iter()
-            .zip(self.counts.iter().map(|c| *c.lock().unwrap()))
+            .zip(self.counts.iter().map(|c| c.load(Ordering::Relaxed)))
         {
             if count < min_records {
                 log::debug!(
@@ -132,19 +119,23 @@ impl SplitProcessor {
         let mut handle = stderr();
         self.aliases
             .iter()
-            .zip(self.counts.iter().map(|x| *x.lock().unwrap()))
+            .zip(self.counts.iter().map(|c| c.load(Ordering::Relaxed)))
             .try_for_each(|(alias, count)| writeln!(&mut handle, "{alias}\t{count}"))?;
-        if self.write_undetermined {
-            if let Some(count) = self.counts.last() {
-                writeln!(
-                    &mut handle,
-                    "{}\t{}",
-                    self.undetermined_name,
-                    *count.lock().unwrap()
-                )?;
-            }
-        }
         handle.flush().map_err(Into::into)
+    }
+
+    /// Moves each thread-local buffer into its global writer with `ingest`.
+    fn ingest_all(
+        &mut self,
+        ingest: impl Fn(
+            &mut BinseqWriter<BoxedWriter>,
+            &mut BinseqWriter<Vec<u8>>,
+        ) -> binseq::Result<()>,
+    ) -> binseq::Result<()> {
+        self.writer
+            .iter()
+            .zip(self.t_writer.iter_mut())
+            .try_for_each(|(global, local)| ingest(&mut global.lock().unwrap(), local))
     }
 }
 impl ParallelProcessor for SplitProcessor {
@@ -152,78 +143,34 @@ impl ParallelProcessor for SplitProcessor {
         &mut self,
         record: R,
     ) -> binseq::Result<()> {
-        let sseq = record.sseq();
-        let xseq = record.xseq();
-        let rec = if record.is_paired() {
-            SequencingRecordBuilder::default()
-                .s_seq(record.sseq())
-                .opt_s_qual(record.has_quality().then(|| record.squal()))
-                .s_header(record.sheader())
-                .x_seq(record.xseq())
-                .opt_x_qual(record.has_quality().then(|| record.xqual()))
-                .x_header(record.xheader())
-                .build()?
-        } else {
-            SequencingRecordBuilder::default()
-                .s_seq(record.sseq())
-                .opt_s_qual(record.has_quality().then(|| record.squal()))
-                .s_header(record.sheader())
-                .build()?
-        };
-        if let Some(pattern_idx) = self.matcher.split_idx(sseq, xseq) {
-            // handle match
-            if let Some(w) = self.t_writer.get_mut(pattern_idx) {
-                w.push(rec)?;
-            }
+        let paired = record.is_paired();
+        let has_qual = record.has_quality();
+        let (sseq, xseq) = (record.sseq(), record.xseq());
+        let rec = SequencingRecordBuilder::default()
+            .s_seq(sseq)
+            .opt_s_qual(has_qual.then(|| record.squal()))
+            .s_header(record.sheader())
+            .opt_x_seq(paired.then_some(xseq))
+            .opt_x_qual((paired && has_qual).then(|| record.xqual()))
+            .opt_x_header(paired.then(|| record.xheader()))
+            .build()?;
 
-            if let Some(c) = self.t_counts.get_mut(pattern_idx) {
-                *c += 1;
-            }
-        } else if self.write_undetermined {
-            // always the last writer
-            let undetermined_idx = self.t_writer.len() - 1;
-
-            // handle match
-            self.t_writer
-                .get_mut(undetermined_idx)
-                .expect("number of writers misconfigured (undetermined)")
-                .push(rec)?;
-
-            if let Some(c) = self.t_counts.get_mut(undetermined_idx) {
-                *c += 1;
-            }
+        // matched bin, else the undetermined bin (if active)
+        if let Some(idx) = self.matcher.split_idx(sseq, xseq).or(self.undetermined_idx) {
+            self.t_writer[idx].push(rec)?;
+            self.t_counts[idx] += 1;
         }
         Ok(())
     }
 
     fn on_batch_complete(&mut self) -> binseq::Result<()> {
-        // ingest counts
-        self.counts.iter().zip(self.t_counts.iter_mut()).for_each(
-            |(global_counts, thread_counts)| {
-                *global_counts.lock().unwrap() += *thread_counts;
-                *thread_counts = 0;
-            },
-        );
-
-        // ingest reads
-        self.writer
-            .iter()
-            .zip(self.t_writer.iter_mut())
-            .try_for_each(|(global_writer, thread_writer)| {
-                global_writer
-                    .lock()
-                    .unwrap()
-                    .ingest_completed(thread_writer)
-            })
+        for (global, local) in self.counts.iter().zip(self.t_counts.iter_mut()) {
+            global.fetch_add(std::mem::take(local), Ordering::Relaxed);
+        }
+        self.ingest_all(BinseqWriter::ingest_completed)
     }
 
     fn on_thread_complete(&mut self) -> binseq::Result<()> {
-        // ingest reads
-        self.writer
-            .iter()
-            .zip(self.t_writer.iter_mut())
-            .try_for_each(|(global_writer, thread_writer)| {
-                global_writer.lock().unwrap().ingest(thread_writer)
-            })
+        self.ingest_all(BinseqWriter::ingest)
     }
 }
