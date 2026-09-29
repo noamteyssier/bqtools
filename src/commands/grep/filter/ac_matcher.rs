@@ -1,7 +1,10 @@
-use aho_corasick::{AhoCorasick, AhoCorasickBuilder, AhoCorasickKind};
+use aho_corasick::AhoCorasick;
 use anyhow::Result;
 
-use crate::commands::grep::filter::{MatchRanges, PatternMatch};
+use crate::commands::{
+    grep::filter::{MatchRanges, PatternMatch},
+    utils::corasick_builder,
+};
 
 type Patterns = Vec<Vec<u8>>;
 #[derive(Clone)]
@@ -27,17 +30,6 @@ impl AhoCorasickMatcher {
             offset,
         })
     }
-}
-
-fn corasick_builder(patterns: &Patterns, no_dfa: bool) -> Result<AhoCorasick> {
-    Ok(AhoCorasickBuilder::new()
-        .ascii_case_insensitive(false)
-        .kind(if no_dfa {
-            None
-        } else {
-            Some(AhoCorasickKind::DFA)
-        })
-        .build(patterns)?)
 }
 
 fn find_and_insert_matches(

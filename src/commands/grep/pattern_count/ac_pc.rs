@@ -1,6 +1,8 @@
-use aho_corasick::{AhoCorasick, AhoCorasickBuilder, AhoCorasickKind};
+use aho_corasick::AhoCorasick;
 use anyhow::Result;
 use fixedbitset::FixedBitSet;
+
+use crate::commands::utils::corasick_builder;
 
 use super::{PatternCollection, PatternCount};
 
@@ -99,17 +101,6 @@ impl AhoCorasickPatternCounter {
         );
         self.bits.clear();
     }
-}
-
-fn corasick_builder(patterns: &[Vec<u8>], no_dfa: bool) -> Result<AhoCorasick> {
-    Ok(AhoCorasickBuilder::new()
-        .ascii_case_insensitive(false)
-        .kind(if no_dfa {
-            None
-        } else {
-            Some(AhoCorasickKind::DFA)
-        })
-        .build(patterns)?)
 }
 
 fn increment_pattern(

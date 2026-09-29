@@ -1,8 +1,8 @@
-use aho_corasick::{AhoCorasick, AhoCorasickBuilder, AhoCorasickKind};
+use aho_corasick::AhoCorasick;
 use anyhow::Result;
 use fixedbitset::FixedBitSet;
 
-use crate::commands::grep::PatternCollection;
+use crate::commands::{grep::PatternCollection, utils::corasick_builder};
 
 /// Fixed-string matching with Aho-Corasick over the three pattern sets
 /// (primary-only, secondary-only, either).
@@ -46,15 +46,4 @@ fn match_patterns(patterns: &AhoCorasick, bitset: &mut FixedBitSet, seqs: &[&[u8
             bitset.insert(offset + m.pattern().as_usize());
         }
     }
-}
-
-fn corasick_builder(patterns: &[Vec<u8>], no_dfa: bool) -> Result<AhoCorasick> {
-    Ok(AhoCorasickBuilder::new()
-        .ascii_case_insensitive(false)
-        .kind(if no_dfa {
-            None
-        } else {
-            Some(AhoCorasickKind::DFA)
-        })
-        .build(patterns)?)
 }
