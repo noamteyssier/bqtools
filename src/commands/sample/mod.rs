@@ -6,7 +6,7 @@ use binseq::prelude::*;
 use rand::{RngExt, SeedableRng};
 use std::sync::Mutex;
 
-use super::decode::{build_writer, write_record_pair, SplitWriter};
+use super::decode::{build_writer, fill_qual, write_record_pair, SplitWriter};
 
 #[derive(Clone)]
 struct SampleProcessor {
@@ -25,7 +25,7 @@ struct SampleProcessor {
 
     /// Write Options
     format: FileFormat,
-    mate: Option<Mate>,
+    mate: Mate,
     is_split: bool,
 
     /// Global values
@@ -37,7 +37,7 @@ impl SampleProcessor {
         seed: u64,
         writer: SplitWriter,
         format: FileFormat,
-        mate: Option<Mate>,
+        mate: Mate,
     ) -> Self {
         Self {
             fraction,
@@ -69,26 +69,13 @@ impl ParallelProcessor for SampleProcessor {
             let squal = if record.has_quality() {
                 record.squal()
             } else {
-                if self.squal.len() < sbuf.len() {
-                    self.squal.resize(sbuf.len(), b'?');
-                }
-                &self.squal
+                fill_qual(&mut self.squal, sbuf.len())
             };
 
-            let xqual = if record.is_paired() {
-                if record.has_quality() {
-                    record.xqual()
-                } else {
-                    if self.xqual.len() < xbuf.len() {
-                        self.xqual.resize(xbuf.len(), b'?');
-                    }
-                    &self.xqual
-                }
+            let xqual = if record.is_paired() && record.has_quality() {
+                record.xqual()
             } else {
-                if self.xqual.len() < xbuf.len() {
-                    self.xqual.resize(xbuf.len(), b'?');
-                }
-                &self.xqual
+                fill_qual(&mut self.xqual, xbuf.len())
             };
 
             write_record_pair(
@@ -114,13 +101,7 @@ impl ParallelProcessor for SampleProcessor {
         // Lock the mutex to write to the global buffer
         {
             let mut writer = self.global_writer.lock().unwrap();
-            if writer.is_split() {
-                writer.write_split(&self.left, true)?;
-                writer.write_split(&self.right, false)?;
-            } else {
-                writer.write_interleaved(&self.mixed)?;
-            }
-            writer.flush()?;
+            writer.write_batch(&self.left, &self.right, &self.mixed)?;
         }
 
         // Clear the local buffer and reset the local record count
@@ -134,12 +115,12 @@ impl ParallelProcessor for SampleProcessor {
 pub fn run(args: &SampleCommand) -> Result<()> {
     args.sample.validate()?;
     let reader = BinseqReader::new(args.input.path())?;
-    let writer = build_writer(&args.output, reader.is_paired())?;
     let format = args.output.format()?;
+    let writer = build_writer(&args.output, format, reader.is_paired())?;
     let mate = if reader.is_paired() {
-        Some(args.output.mate)
+        args.output.mate
     } else {
-        None
+        Mate::One
     };
     let proc = SampleProcessor::new(args.sample.fraction, args.sample.seed, writer, format, mate);
     if let Some(span) = args.input.span {

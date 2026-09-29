@@ -1,22 +1,15 @@
-use std::io::Write;
-
 mod decode_binseq;
 mod utils;
 
-use crate::cli::{DecodeCommand, Mate, OutputFile};
+use crate::cli::{DecodeCommand, FileFormat, Mate, OutputFile};
 use decode_binseq::Decoder;
-pub use utils::{write_record, write_record_pair, SplitWriter};
+pub use utils::{fill_qual, write_record, write_record_pair, SplitWriter};
 
 use anyhow::{bail, Result};
 use binseq::prelude::*;
 use log::{info, warn};
 
-/// Convenience type wrapper
-pub type Writer = Box<dyn Write + Send>;
-
-pub fn build_writer(args: &OutputFile, paired: bool) -> Result<SplitWriter> {
-    let format = args.format()?;
-
+pub fn build_writer(args: &OutputFile, format: FileFormat, paired: bool) -> Result<SplitWriter> {
     // Split writer
     if args.prefix.is_some() {
         if !paired {
@@ -26,32 +19,30 @@ pub fn build_writer(args: &OutputFile, paired: bool) -> Result<SplitWriter> {
             bail!("`--prefix` writes both mates to separate files; use `-o` with `--mate 1|2`");
         }
         let (r1, r2) = args.as_paired_writer(format)?;
-        Ok(SplitWriter::new_split(r1, r2))
+        Ok(SplitWriter::Split {
+            left: r1,
+            right: r2,
+        })
     } else {
-        if !paired {
-            match args.mate {
-                Mate::One | Mate::Two => {
-                    warn!("Ignoring `--mate/-m` flag as only single channel found in file");
-                }
-                Mate::Both => {}
-            }
+        if !paired && args.mate != Mate::Both {
+            warn!("Ignoring `--mate/-m` flag as only single channel found in file");
         }
 
         // Interleaved writer
-        let writer = args.as_writer()?;
-        let split = SplitWriter::new_interleaved(writer);
-        Ok(split)
+        Ok(SplitWriter::Interleaved {
+            inner: args.as_writer()?,
+        })
     }
 }
 
 pub fn run(args: &DecodeCommand) -> Result<()> {
     let reader = BinseqReader::new(args.input.path())?;
-    let writer = build_writer(&args.output, reader.is_paired())?;
     let format = args.output.format()?;
+    let writer = build_writer(&args.output, format, reader.is_paired())?;
     let mate = if reader.is_paired() {
-        Some(args.output.mate)
+        args.output.mate
     } else {
-        None
+        Mate::One
     };
     let proc = Decoder::new(writer, format, mate);
     if let Some(span) = args.input.span {
@@ -91,13 +82,17 @@ mod tests {
         crate::commands::encode::run(&cmd)
     }
 
-    fn decode(bq_path: &std::path::Path, out_path: &std::path::Path) -> Result<()> {
-        let cmd = crate::cli::DecodeCommand::try_parse_from([
-            "decode",
-            bq_path.to_str().unwrap(),
-            "-o",
-            out_path.to_str().unwrap(),
-        ])?;
+    fn decode(bq_path: &std::path::Path, out_path: &std::path::Path, extra: &[&str]) -> Result<()> {
+        let cmd = crate::cli::DecodeCommand::try_parse_from(
+            [
+                "decode",
+                bq_path.to_str().unwrap(),
+                "-o",
+                out_path.to_str().unwrap(),
+            ]
+            .into_iter()
+            .chain(extra.iter().copied()),
+        )?;
         super::run(&cmd)
     }
 
@@ -114,7 +109,7 @@ mod tests {
             encode(in_tmp.path(), bq_tmp.path())?;
 
             let out_tmp = NamedTempFile::with_suffix(fmt.fastx_suffix())?;
-            decode(bq_tmp.path(), out_tmp.path())?;
+            decode(bq_tmp.path(), out_tmp.path(), &[])?;
 
             let count = count_fastx_records(out_tmp.path())?;
             assert_eq!(
@@ -133,15 +128,7 @@ mod tests {
 
         for threads in ["1", "2", "4"] {
             let out_tmp = NamedTempFile::with_suffix(".fastq")?;
-            let cmd = crate::cli::DecodeCommand::try_parse_from([
-                "decode",
-                bq_tmp.path().to_str().unwrap(),
-                "-o",
-                out_tmp.path().to_str().unwrap(),
-                "-T",
-                threads,
-            ])?;
-            super::run(&cmd)?;
+            decode(bq_tmp.path(), out_tmp.path(), &["-T", threads])?;
             assert_eq!(count_fastx_records(out_tmp.path())?, 1000);
         }
         Ok(())
@@ -155,15 +142,7 @@ mod tests {
 
         for (fmt_flag, out_suffix) in [("a", ".fasta"), ("q", ".fastq")] {
             let out_tmp = NamedTempFile::with_suffix(out_suffix)?;
-            let cmd = crate::cli::DecodeCommand::try_parse_from([
-                "decode",
-                bq_tmp.path().to_str().unwrap(),
-                "-o",
-                out_tmp.path().to_str().unwrap(),
-                "-f",
-                fmt_flag,
-            ])?;
-            super::run(&cmd)?;
+            decode(bq_tmp.path(), out_tmp.path(), &["-f", fmt_flag])?;
             assert_eq!(count_fastx_records(out_tmp.path())?, DEFAULT_NUM_RECORDS);
         }
         Ok(())
@@ -221,15 +200,7 @@ mod tests {
         // mate=1 or mate=2: one mate per pair → N records
         for mate in ["1", "2"] {
             let out_tmp = NamedTempFile::with_suffix(".fastq")?;
-            let cmd = crate::cli::DecodeCommand::try_parse_from([
-                "decode",
-                bq_tmp.path().to_str().unwrap(),
-                "-o",
-                out_tmp.path().to_str().unwrap(),
-                "-m",
-                mate,
-            ])?;
-            super::run(&cmd)?;
+            decode(bq_tmp.path(), out_tmp.path(), &["-m", mate])?;
             assert_eq!(
                 count_fastx_records(out_tmp.path())?,
                 DEFAULT_NUM_RECORDS,
@@ -240,15 +211,7 @@ mod tests {
         // mate=both: R1 and R2 interleaved into a single file → 2×N records
         {
             let out_tmp = NamedTempFile::with_suffix(".fastq")?;
-            let cmd = crate::cli::DecodeCommand::try_parse_from([
-                "decode",
-                bq_tmp.path().to_str().unwrap(),
-                "-o",
-                out_tmp.path().to_str().unwrap(),
-                "-m",
-                "both",
-            ])?;
-            super::run(&cmd)?;
+            decode(bq_tmp.path(), out_tmp.path(), &["-m", "both"])?;
             assert_eq!(
                 count_fastx_records(out_tmp.path())?,
                 2 * DEFAULT_NUM_RECORDS,
@@ -274,15 +237,7 @@ mod tests {
 
             // First 50 records
             let out_tmp = NamedTempFile::with_suffix(".fastq")?;
-            let cmd = crate::cli::DecodeCommand::try_parse_from([
-                "decode",
-                bq_tmp.path().to_str().unwrap(),
-                "-o",
-                out_tmp.path().to_str().unwrap(),
-                "--span",
-                "0..50",
-            ])?;
-            super::run(&cmd)?;
+            decode(bq_tmp.path(), out_tmp.path(), &["--span", "0..50"])?;
             assert_eq!(
                 count_fastx_records(out_tmp.path())?,
                 50,
@@ -291,15 +246,7 @@ mod tests {
 
             // Records from 50 to end
             let out_tmp = NamedTempFile::with_suffix(".fastq")?;
-            let cmd = crate::cli::DecodeCommand::try_parse_from([
-                "decode",
-                bq_tmp.path().to_str().unwrap(),
-                "-o",
-                out_tmp.path().to_str().unwrap(),
-                "--span",
-                "50..",
-            ])?;
-            super::run(&cmd)?;
+            decode(bq_tmp.path(), out_tmp.path(), &["--span", "50.."])?;
             assert_eq!(
                 count_fastx_records(out_tmp.path())?,
                 nrec - 50,

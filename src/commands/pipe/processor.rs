@@ -8,7 +8,7 @@ use super::RecordPair;
 use crate::{
     cli::FileFormat,
     commands::{
-        decode::write_record,
+        decode::{fill_qual, write_record},
         pipe::utils::{name_fifo, open_fifo},
     },
     types::BoxedWriter,
@@ -48,10 +48,7 @@ impl ParallelProcessor for PipeProcessor {
                 let qual = if record.has_quality() {
                     record.squal()
                 } else {
-                    if self.squal.len() != record.slen() as usize {
-                        self.squal.resize(record.slen() as usize, b'?');
-                    }
-                    &self.squal
+                    fill_qual(&mut self.squal, record.slen() as usize)
                 };
 
                 write_record(
@@ -67,10 +64,7 @@ impl ParallelProcessor for PipeProcessor {
                 let qual = if record.has_quality() {
                     record.xqual()
                 } else {
-                    if self.xqual.len() != record.xlen() as usize {
-                        self.xqual.resize(record.xlen() as usize, b'?');
-                    }
-                    &self.xqual
+                    fill_qual(&mut self.xqual, record.xlen() as usize)
                 };
                 write_record(
                     &mut self.local,

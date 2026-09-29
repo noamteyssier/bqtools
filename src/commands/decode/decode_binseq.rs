@@ -1,10 +1,11 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use binseq::prelude::*;
 use binseq::Result;
 use std::sync::Mutex;
 
-use super::{write_record_pair, SplitWriter};
+use super::{fill_qual, write_record_pair, SplitWriter};
 use crate::cli::{FileFormat, Mate};
 
 /// A struct for decoding BINSEQ data back to FASTQ format.
@@ -24,16 +25,16 @@ pub struct Decoder {
 
     /// Options
     format: FileFormat,
-    mate: Option<Mate>,
+    mate: Mate,
     is_split: bool,
 
     /// Global values
     global_writer: Arc<Mutex<SplitWriter>>,
-    num_records: Arc<Mutex<usize>>,
+    num_records: Arc<AtomicUsize>,
 }
 
 impl Decoder {
-    pub fn new(writer: SplitWriter, format: FileFormat, mate: Option<Mate>) -> Self {
+    pub fn new(writer: SplitWriter, format: FileFormat, mate: Mate) -> Self {
         Decoder {
             mixed: Vec::new(),
             left: Vec::new(),
@@ -45,12 +46,12 @@ impl Decoder {
             mate,
             is_split: writer.is_split(),
             global_writer: Arc::new(Mutex::new(writer)),
-            num_records: Arc::new(Mutex::new(0)),
+            num_records: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     pub fn num_records(&self) -> usize {
-        *self.num_records.lock().unwrap()
+        self.num_records.load(Ordering::Relaxed)
     }
 }
 
@@ -63,26 +64,13 @@ impl ParallelProcessor for Decoder {
         let squal = if record.has_quality() {
             record.squal()
         } else {
-            if self.squal.len() < sbuf.len() {
-                self.squal.resize(sbuf.len(), b'?');
-            }
-            &self.squal
+            fill_qual(&mut self.squal, sbuf.len())
         };
 
-        let xqual = if record.is_paired() {
-            if record.has_quality() {
-                record.xqual()
-            } else {
-                if self.xqual.len() < xbuf.len() {
-                    self.xqual.resize(xbuf.len(), b'?');
-                }
-                &self.xqual
-            }
+        let xqual = if record.is_paired() && record.has_quality() {
+            record.xqual()
         } else {
-            if self.xqual.len() < xbuf.len() {
-                self.xqual.resize(xbuf.len(), b'?');
-            }
-            &self.xqual
+            fill_qual(&mut self.xqual, xbuf.len())
         };
 
         write_record_pair(
@@ -108,19 +96,10 @@ impl ParallelProcessor for Decoder {
         // Lock the mutex to write to the global buffer
         {
             let mut writer = self.global_writer.lock().unwrap();
-            if writer.is_split() {
-                writer.write_split(&self.left, true)?;
-                writer.write_split(&self.right, false)?;
-            } else {
-                writer.write_interleaved(&self.mixed)?;
-            }
-            writer.flush()?;
+            writer.write_batch(&self.left, &self.right, &self.mixed)?;
         }
-        // Lock the mutex to update the number of records
-        {
-            let mut num_records = self.num_records.lock().unwrap();
-            *num_records += self.local_count;
-        }
+        self.num_records
+            .fetch_add(self.local_count, Ordering::Relaxed);
 
         // Clear the local buffer and reset the local record count
         self.mixed.clear();

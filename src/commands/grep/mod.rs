@@ -261,8 +261,8 @@ pub fn run(args: &GrepCommand) -> Result<()> {
     if args.grep.pattern_count {
         return run_pattern_count(args, reader);
     }
-    let writer = build_writer(&args.output, reader.is_paired())?;
     let format = args.output.format()?;
+    let writer = build_writer(&args.output, format, reader.is_paired())?;
     let mate = if reader.is_paired() {
         Some(args.output.mate)
     } else {
