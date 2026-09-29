@@ -7,14 +7,6 @@ use crate::cli::FileFormat;
 
 use super::{utils::name_fifo, PairedChannels, RecordPair};
 
-#[derive(Clone, Copy)]
-pub enum ExecMode<'a> {
-    /// `-x`: one shell invocation per FIFO (or per R1/R2 pair for paired files).
-    PerFifo(&'a str),
-    /// `-X`: one shell invocation with all FIFO paths substituted in.
-    Batch(&'a str),
-}
-
 /// Validate that the exec template contains the substitution tokens required for
 /// the file type, so a missing `{}` / `{R1}` / `{R2}` fails fast rather than
 /// leaving a FIFO open with no reader (which hangs indefinitely).
@@ -46,75 +38,69 @@ pub fn required_channels(template: &str) -> PairedChannels {
     }
 }
 
-/// Spawn consumer subprocesses according to `mode`, returning their handles.
+/// Spawn consumer subprocesses, returning their handles.
+///
+/// `batch` selects `-X` (one shell invocation with all FIFO paths substituted in)
+/// over `-x` (one invocation per FIFO, or per R1/R2 pair for paired files).
 ///
 /// Must be called after FIFOs are created but before writer threads are spawned,
 /// because opening a FIFO for writing blocks until a reader connects.
 pub fn spawn_consumers(
-    mode: ExecMode<'_>,
+    template: &str,
+    batch: bool,
     basename: &str,
     paired: bool,
     num_pipes: usize,
     format: FileFormat,
 ) -> Result<Vec<Child>> {
-    let mut children = Vec::new();
-    match mode {
-        ExecMode::PerFifo(template) => {
-            for pid in 0..num_pipes {
+    let paths = |pair| -> Vec<String> {
+        (0..num_pipes)
+            .map(|pid| name_fifo(basename, pid, pair, format))
+            .collect()
+    };
+    let sh = |cmd: &str| -> Result<Child> {
+        log::debug!("exec: sh -c {cmd:?}");
+        Ok(Command::new("sh").arg("-c").arg(cmd).spawn()?)
+    };
+    if !batch {
+        let (a, b) = if paired {
+            (paths(RecordPair::R1), paths(RecordPair::R2))
+        } else {
+            (paths(RecordPair::Unpaired), Vec::new())
+        };
+        return (0..num_pipes)
+            .map(|pid| {
                 let cmd = if paired {
-                    let r1 = name_fifo(basename, pid, RecordPair::R1, format);
-                    let r2 = name_fifo(basename, pid, RecordPair::R2, format);
-                    template.replace("{R1}", &r1).replace("{R2}", &r2)
+                    template.replace("{R1}", &a[pid]).replace("{R2}", &b[pid])
                 } else {
-                    let path = name_fifo(basename, pid, RecordPair::Unpaired, format);
-                    template.replace("{}", &path)
+                    template.replace("{}", &a[pid])
                 }
                 .replace("{n}", &pid.to_string());
-                children.push(sh(&cmd)?);
-            }
-        }
-        ExecMode::Batch(template) => {
-            if template.contains("{n}") {
-                warn!(
-                    "{{n}} is not expanded by --exec-batch; did you mean -x/--exec (one command per pipe)?"
-                );
-            }
-            let cmd = if paired {
-                let r1s: Vec<_> = (0..num_pipes)
-                    .map(|pid| name_fifo(basename, pid, RecordPair::R1, format))
-                    .collect();
-                let r2s: Vec<_> = (0..num_pipes)
-                    .map(|pid| name_fifo(basename, pid, RecordPair::R2, format))
-                    .collect();
-                // An adjacent `{R1} {R2}` expands as interleaved pairs (r1_0 r2_0 r1_1 r2_1 …)
-                // so positional paired-argument tools receive each pair together; any
-                // remaining `{R1}` / `{R2}` expand to their own space-joined lists.
-                let interleaved: Vec<_> = r1s
-                    .iter()
-                    .zip(&r2s)
-                    .flat_map(|(r1, r2)| [r1.as_str(), r2.as_str()])
-                    .collect();
-                template
-                    .replace("{R1} {R2}", &interleaved.join(" "))
-                    .replace("{R1}", &r1s.join(" "))
-                    .replace("{R2}", &r2s.join(" "))
-            } else {
-                let paths: Vec<_> = (0..num_pipes)
-                    .map(|pid| name_fifo(basename, pid, RecordPair::Unpaired, format))
-                    .collect();
-                template.replace("{}", &paths.join(" "))
-            };
-            children.push(sh(&cmd)?);
-        }
+                sh(&cmd)
+            })
+            .collect();
     }
-    Ok(children)
-}
-
-fn sh(cmd: &str) -> Result<Child> {
-    log::debug!("exec: sh -c {cmd:?}");
-    Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .spawn()
-        .map_err(Into::into)
+    if template.contains("{n}") {
+        warn!(
+            "{{n}} is not expanded by --exec-batch; did you mean -x/--exec (one command per pipe)?"
+        );
+    }
+    let cmd = if paired {
+        let (r1s, r2s) = (paths(RecordPair::R1), paths(RecordPair::R2));
+        // An adjacent `{R1} {R2}` expands as interleaved pairs (r1_0 r2_0 r1_1 r2_1 …)
+        // so positional paired-argument tools receive each pair together; any
+        // remaining `{R1}` / `{R2}` expand to their own space-joined lists.
+        let interleaved: Vec<_> = r1s
+            .iter()
+            .zip(&r2s)
+            .flat_map(|(r1, r2)| [r1.as_str(), r2.as_str()])
+            .collect();
+        template
+            .replace("{R1} {R2}", &interleaved.join(" "))
+            .replace("{R1}", &r1s.join(" "))
+            .replace("{R2}", &r2s.join(" "))
+    } else {
+        template.replace("{}", &paths(RecordPair::Unpaired).join(" "))
+    };
+    Ok(vec![sh(&cmd)?])
 }

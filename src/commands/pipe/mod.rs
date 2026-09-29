@@ -9,7 +9,6 @@ use binseq::BinseqReader;
 use log::info;
 
 use crate::cli::{FileFormat, PipeCommand};
-use exec::ExecMode;
 use processor::PipeProcessor;
 use utils::{create_fifos, pairs, FifoGuard};
 
@@ -78,13 +77,15 @@ pub fn run(args: &PipeCommand) -> Result<()> {
 
     // Spawn consumer processes before writer threads: opening a FIFO for writing
     // blocks until a reader connects, so readers must be in-flight first.
-    let exec_mode = if let Some(t) = args.exec() {
-        Some(ExecMode::PerFifo(t))
-    } else {
-        args.exec_batch().map(ExecMode::Batch)
-    };
-    let mut consumers = match exec_mode {
-        Some(mode) => exec::spawn_consumers(mode, basename, paired, num_pipes, format)?,
+    let mut consumers = match tmpl {
+        Some(t) => exec::spawn_consumers(
+            t,
+            args.exec().is_none(),
+            basename,
+            paired,
+            num_pipes,
+            format,
+        )?,
         None => Vec::new(),
     };
 
