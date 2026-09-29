@@ -2,7 +2,17 @@
 
 ## 0.6.0
 
-A dependency-refresh and internal cleanup release. There are no intentional CLI changes. The one visible difference is that `encode` no longer logs an `error!` line before bailing, so those errors now print once, via `anyhow`. The work landed as stacked PRs (#7–#60) on `dev-0.6.0`, and the branch is a net -1,800 lines (+2,121 / -3,921 across 50 files).
+A dependency-refresh and internal cleanup release, with a grep engine consolidation, a few bug fixes, and one new flag (`pipe --span`). Also, `encode` no longer logs an `error!` line before bailing, so those errors now print once, via `anyhow`. The work landed as stacked PRs (#7–#80) on `dev-0.6.0`.
+
+### Features
+
+- `pipe` supports `--span` to restrict processing to a range of records (#80)
+
+### Fixes
+
+- `grep` rejects extended patterns on single-end input instead of accepting them
+- `grep` fuzzy matching skips empty sequences
+- `pipe` errors when the output path already exists and is not a fifo. Symlinks are not followed (#76)
 
 ### Dependencies
 
@@ -13,6 +23,7 @@ A dependency-refresh and internal cleanup release. There are no intentional CLI 
 - drop `num_cpus` in favor of `std::thread::available_parallelism`, which falls back to 1 (#9)
 - drop `parking_lot` in favor of `std::sync::Mutex` (#10)
 - move `niffler` to `dev-dependencies`, since only test helpers use it (#11)
+- drop `nix` in favor of `libc` for fifo creation (#76)
 - drop `memmap2`, and with it an `unsafe` mmap. `cat` now copies the file tail with `seek` + `io::copy` (#28)
 
 ### Internal refactors
@@ -58,6 +69,14 @@ Behavior is unchanged. The changes remove duplicated code and simplify each subc
   - simplify setup (#52)
   - share alias binning across splitters (#53)
   - simplify the processor (#54)
+- **grep** (#63–#77)
+  - share one pattern engine between `-P` and `split`, and run the filter on it
+  - share pattern sets and the aho-corasick builder between `grep` and `split`
+  - write colored output through the shared record writer
+  - store match ranges in a vec, use atomics for shared counts, and simplify range parsing and slicing
+  - drop the pattern collection drain and unused `pattern_strings`
+- **cli**
+  - resolve `--span` through `InputBinseq::range`
 - **qc**
   - build modules directly from `QcOptions` and delete `qc/config.rs` (#56)
   - share TSV writing and stats (#57)
@@ -73,4 +92,5 @@ Behavior is unchanged. The changes remove duplicated code and simplify each subc
 - fold encode specialization tests into one (#51)
 - trim the info record count test (#30)
 - add tests covering encode output naming
+- add grep behavior guardrail tests and a `bench_grep` timing example
 - use lowercase "htslib" in docs
