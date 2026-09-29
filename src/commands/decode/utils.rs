@@ -51,14 +51,6 @@ pub enum SplitWriter {
     Split { left: Writer, right: Writer },
 }
 impl SplitWriter {
-    pub fn new_interleaved(writer: Writer) -> Self {
-        Self::Interleaved { inner: writer }
-    }
-
-    pub fn new_split(left: Writer, right: Writer) -> Self {
-        Self::Split { left, right }
-    }
-
     pub fn is_split(&self) -> bool {
         match self {
             Self::Interleaved { .. } => false,
@@ -66,32 +58,18 @@ impl SplitWriter {
         }
     }
 
-    pub fn write_interleaved(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
+    /// Write one batch: `left`/`right` when split, `mixed` when interleaved.
+    pub fn write_batch(&mut self, left: &[u8], right: &[u8], mixed: &[u8]) -> std::io::Result<()> {
         match self {
-            SplitWriter::Interleaved { inner } => {
-                inner.write_all(buf)?;
-                Ok(())
+            Self::Interleaved { inner } => inner.write_all(mixed),
+            Self::Split { left: l, right: r } => {
+                l.write_all(left)?;
+                r.write_all(right)
             }
-            SplitWriter::Split { .. } => {
-                panic!("Unable to write to interleaved as the writer is split")
-            }
-        }
+        }?;
+        self.flush()
     }
-    pub fn write_split(&mut self, buf: &[u8], write_to_left: bool) -> Result<(), std::io::Error> {
-        match self {
-            SplitWriter::Interleaved { .. } => {
-                panic!("Unable to write split as the writer is interleaved")
-            }
-            SplitWriter::Split { left, right } => {
-                if write_to_left {
-                    left.write_all(buf)?;
-                } else {
-                    right.write_all(buf)?;
-                }
-                Ok(())
-            }
-        }
-    }
+
     pub fn flush(&mut self) -> Result<(), std::io::Error> {
         match self {
             SplitWriter::Interleaved { inner } => {

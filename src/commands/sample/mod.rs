@@ -114,13 +114,7 @@ impl ParallelProcessor for SampleProcessor {
         // Lock the mutex to write to the global buffer
         {
             let mut writer = self.global_writer.lock().unwrap();
-            if writer.is_split() {
-                writer.write_split(&self.left, true)?;
-                writer.write_split(&self.right, false)?;
-            } else {
-                writer.write_interleaved(&self.mixed)?;
-            }
-            writer.flush()?;
+            writer.write_batch(&self.left, &self.right, &self.mixed)?;
         }
 
         // Clear the local buffer and reset the local record count

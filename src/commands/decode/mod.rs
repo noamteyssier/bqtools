@@ -26,7 +26,10 @@ pub fn build_writer(args: &OutputFile, paired: bool) -> Result<SplitWriter> {
             bail!("`--prefix` writes both mates to separate files; use `-o` with `--mate 1|2`");
         }
         let (r1, r2) = args.as_paired_writer(format)?;
-        Ok(SplitWriter::new_split(r1, r2))
+        Ok(SplitWriter::Split {
+            left: r1,
+            right: r2,
+        })
     } else {
         if !paired {
             match args.mate {
@@ -38,9 +41,9 @@ pub fn build_writer(args: &OutputFile, paired: bool) -> Result<SplitWriter> {
         }
 
         // Interleaved writer
-        let writer = args.as_writer()?;
-        let split = SplitWriter::new_interleaved(writer);
-        Ok(split)
+        Ok(SplitWriter::Interleaved {
+            inner: args.as_writer()?,
+        })
     }
 }
 
