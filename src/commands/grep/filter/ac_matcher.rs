@@ -38,11 +38,13 @@ fn find_and_insert_matches(
     matches: &mut MatchRanges,
     offset: usize,
 ) -> bool {
-    state
-        .find_overlapping_iter(sequence)
-        .map(|mat| matches.insert((offset + mat.start(), offset + mat.end())))
-        .count()
-        > 0
+    let before = matches.len();
+    matches.extend(
+        state
+            .find_overlapping_iter(sequence)
+            .map(|mat| (offset + mat.start(), offset + mat.end())),
+    );
+    matches.len() > before
 }
 
 impl PatternMatch for AhoCorasickMatcher {

@@ -100,7 +100,7 @@ fn find_and_insert_matches(
             if inexact && m.cost == 0 {
                 return;
             }
-            matches.insert((m.text_start + offset, m.text_end + offset));
+            matches.push((m.text_start + offset, m.text_end + offset));
             bitset.set(m.pattern_idx, true);
             found = true;
         });

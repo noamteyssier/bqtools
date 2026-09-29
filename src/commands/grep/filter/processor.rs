@@ -50,7 +50,6 @@ pub struct FilterProcessor<Pm: PatternMatch> {
     mixed: Vec<u8>, // General purpose, interleaved or singlets
     left: Vec<u8>, // Used when writing pairs of files (R1/R2)
     right: Vec<u8>,
-    interval_buffer: Vec<(usize, usize)>, // reused by colored writer for merging intervals
 
     /// Quality buffers
     squal: Vec<u8>,
@@ -91,7 +90,6 @@ impl<Pm: PatternMatch> FilterProcessor<Pm> {
             xqual: Vec::new(),
             smatches: MatchRanges::default(),
             xmatches: MatchRanges::default(),
-            interval_buffer: Vec::new(),
             matcher,
             and_logic,
             invert,
@@ -203,10 +201,9 @@ impl<Pm: PatternMatch> ParallelProcessor for FilterProcessor<Pm> {
                     xbuf,
                     xqual,
                     record.xheader(),
-                    &self.smatches,
-                    &self.xmatches,
+                    &mut self.smatches,
+                    &mut self.xmatches,
                     self.format,
-                    &mut self.interval_buffer,
                 )
             } else {
                 write_record_pair(

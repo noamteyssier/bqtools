@@ -30,7 +30,7 @@ fn find_and_insert_matches(
 ) -> bool {
     let mut found = false;
     for index in reg.find_iter(sequence) {
-        matches.insert((index.start() + offset, index.end() + offset));
+        matches.push((index.start() + offset, index.end() + offset));
         found = true;
     }
     found
