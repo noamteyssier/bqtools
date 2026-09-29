@@ -117,51 +117,33 @@ pub fn pair_r1_r2_files(files: &[PathBuf]) -> Result<Vec<Vec<PathBuf>>> {
 /// For single files: removes the original extension and replaces with new extension
 /// For paired files: extracts the base name + suffix (everything except _R[12]) and adds new extension
 pub fn generate_output_name(input_files: &[PathBuf], new_extension: &str) -> Result<String> {
-    match input_files.len() {
-        1 => {
-            // Single file: just replace the extension
-            let input_path = input_files[0].to_str().unwrap();
-            let extension_regex =
-                Regex::new(r"\.(?:fastq|fq|fasta|fa|sam|bam|cram)(?:\.gz|\.zst)?$")?;
-            let output_name = extension_regex
-                .replace(input_path, new_extension)
-                .to_string();
-            if output_name == input_path {
-                error!("Unable to autodetermine the output filename for {input_path}");
-                bail!("Unable to autodetermine the output filename for {input_path}");
-            }
-            Ok(output_name)
-        }
-        2 => {
-            // Paired files: extract base name + suffix, excluding _R[12]
-            let input_path = input_files[0].to_str().unwrap();
-            let pair_regex =
-                Regex::new(r"^(.+)_R[12](_[^.]*)?\.(?:fastq|fq|fasta|fa)(?:\.gz|\.zst)?$")?;
+    static PAIR: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(.+)_R[12](_[^.]*)?\.(?:fastq|fq|fasta|fa)(?:\.gz|\.zst)?$").unwrap()
+    });
+    static FASTX_EXT: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\.(?:fastq|fq|fasta|fa)(?:\.gz|\.zst)?$").unwrap());
+    static ANY_EXT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\.(?:fastq|fq|fasta|fa|sam|bam|cram)(?:\.gz|\.zst)?$").unwrap()
+    });
 
-            if let Some(caps) = pair_regex.captures(input_path) {
-                let base = &caps[1];
-                let suffix = caps.get(2).map_or("", |m| m.as_str());
-                let output_name = format!("{base}{suffix}{new_extension}");
-                if output_name == input_path {
-                    error!("Unable to autodetermine the output filename for {input_path}");
-                    bail!("Unable to autodetermine the output filename for {input_path}");
-                }
-                Ok(output_name)
-            } else {
-                // Fallback: use the first file's name with extension replaced
-                let extension_regex = Regex::new(r"\.(?:fastq|fq|fasta|fa)(?:\.gz|\.zst)?$")?;
-                let output_name = extension_regex
-                    .replace(input_path, new_extension)
-                    .to_string();
-                if output_name == input_path {
-                    error!("Unable to autodetermine the output filename for {input_path}");
-                    bail!("Unable to autodetermine the output filename for {input_path}");
-                }
-                Ok(output_name)
-            }
-        }
-        _ => bail!("Invalid number of input files: {}", input_files.len()),
+    let paired = match input_files.len() {
+        1 => false,
+        2 => true,
+        n => bail!("Invalid number of input files: {n}"),
+    };
+    let input_path = input_files[0].to_str().unwrap();
+    let output_name = if let Some(caps) = PAIR.captures(input_path).filter(|_| paired) {
+        let suffix = caps.get(2).map_or("", |m| m.as_str());
+        format!("{}{suffix}{new_extension}", &caps[1])
+    } else {
+        let regex = if paired { &FASTX_EXT } else { &ANY_EXT };
+        regex.replace(input_path, new_extension).into_owned()
+    };
+    if output_name == input_path {
+        error!("Unable to autodetermine the output filename for {input_path}");
+        bail!("Unable to autodetermine the output filename for {input_path}");
     }
+    Ok(output_name)
 }
 
 pub fn pull_single_files(input_files: &[PathBuf]) -> Vec<Vec<PathBuf>> {
