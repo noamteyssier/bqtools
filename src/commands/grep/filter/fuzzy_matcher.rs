@@ -88,6 +88,10 @@ fn find_and_insert_matches(
     inexact: bool,
     offset: usize,
 ) -> bool {
+    // sassy panics on empty texts (e.g. the extended mate of single-end input)
+    if sequence.is_empty() {
+        return false;
+    }
     let mut found = false;
     searcher
         .search_encoded_patterns(patterns, sequence, k)
@@ -143,6 +147,10 @@ impl PatternMatch for FuzzyMatcher {
         matches: &mut MatchRanges,
         and_logic: bool,
     ) -> bool {
+        // nothing to search (single-end input): the extended set is satisfied
+        if sequence.is_empty() {
+            return true;
+        }
         if let Some(ref epat) = self.pat2 {
             self.bs2.clear();
             let offset = self.offset();

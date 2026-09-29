@@ -113,10 +113,8 @@ fn expand(args: &[&str], backend: usize) -> Vec<String> {
     out
 }
 
-// ponytail: fuzzy is skipped for single-end input, where `grep -z` currently
-// panics inside sassy (it searches the empty extended sequence).
-fn backends(single: bool) -> &'static [usize] {
-    if cfg!(feature = "fuzzy") && !single {
+fn backends() -> &'static [usize] {
+    if cfg!(feature = "fuzzy") {
         &[0, 1, 2]
     } else {
         &[0, 1]
@@ -125,7 +123,7 @@ fn backends(single: bool) -> &'static [usize] {
 
 /// Runs a matrix case on every backend; `norm` maps stdout to comparable lines.
 fn matrix(fx: &Fixture, single: bool, args: &[&str], want: &[String], sort: bool) {
-    for &b in backends(single) {
+    for &b in backends() {
         let (ok, stdout) = fx.run(single, &expand(args, b));
         assert!(ok, "backend {b}: grep {args:?} failed");
         // `-P` prints pattern text as the row name; undo the regex wrapping
@@ -417,7 +415,5 @@ fn rejected_invocations() {
 // Known backend divergences, deliberately NOT pinned (revisit when unifying):
 // * regex under OR stops at the first matching pattern, so only that
 //   pattern's hits are highlighted; Aho-Corasick and fuzzy highlight all.
-// * with an empty secondary sequence (single-end input) plus `-R` patterns,
-//   regex/Aho-Corasick treat the extended set as satisfied, fuzzy does not.
 // * `-P -v` on an empty secondary sequence: regex/Aho-Corasick skip the set,
 //   fuzzy counts it.

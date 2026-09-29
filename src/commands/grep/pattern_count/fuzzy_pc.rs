@@ -75,6 +75,9 @@ impl FuzzyPatternCounter {
     }
 
     fn match_primary(&mut self, sequence: &[u8]) {
+        if sequence.is_empty() {
+            return;
+        }
         if let Some(ref epat) = self.pat1 {
             self.searcher_1
                 .search_encoded_patterns(epat, sequence, self.k)
@@ -89,6 +92,10 @@ impl FuzzyPatternCounter {
     }
 
     fn match_secondary(&mut self, sequence: &[u8]) {
+        // sassy panics on empty texts (e.g. single-end input)
+        if sequence.is_empty() {
+            return;
+        }
         if let Some(ref epat) = self.pat2 {
             self.searcher_2
                 .search_encoded_patterns(epat, sequence, self.k)
@@ -118,10 +125,12 @@ impl FuzzyPatternCounter {
                 .for_each(&mut eval);
 
             // match on secondary
-            self.searcher
-                .search_encoded_patterns(epat, secondary, self.k)
-                .iter()
-                .for_each(eval);
+            if !secondary.is_empty() {
+                self.searcher
+                    .search_encoded_patterns(epat, secondary, self.k)
+                    .iter()
+                    .for_each(eval);
+            }
         }
     }
 
