@@ -214,7 +214,6 @@ dependencies = [
  "itertools 0.15.0",
  "libc",
  "log",
- "memmap2",
  "niffler",
  "nix",
  "paraseq",

@@ -1,8 +1,10 @@
-use std::{fs::File, io::Write};
+use std::{
+    fs::File,
+    io::{self, Seek, SeekFrom, Write},
+};
 
 use anyhow::{anyhow, bail, ensure, Result};
 use binseq::{bq, cbq, vbq, BinseqReader, BinseqWriter, BinseqWriterBuilder, ParallelReader};
-use memmap2::MmapOptions;
 
 use crate::{
     cli::{BinseqMode, CatCommand},
@@ -48,9 +50,9 @@ fn run_bq(args: CatCommand) -> Result<()> {
 
     header.write_bytes(&mut out_handle)?;
     for path in args.input.input {
-        let file = File::open(path)?;
-        let mmap = unsafe { MmapOptions::new().map(&file)? };
-        out_handle.write_all(&mmap[bq::SIZE_HEADER..])?;
+        let mut file = File::open(path)?;
+        file.seek(SeekFrom::Start(bq::SIZE_HEADER as u64))?;
+        io::copy(&mut file, &mut out_handle)?;
     }
     out_handle.flush()?;
 
