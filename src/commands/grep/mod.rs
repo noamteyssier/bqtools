@@ -145,8 +145,12 @@ fn build_counter(args: &GrepCommand, paired: bool) -> Result<PatternCounter> {
 fn run_pattern_count(args: &GrepCommand, reader: BinseqReader) -> Result<()> {
     let counter = build_counter(args, reader.is_paired())?;
     let pattern_names = counter.pattern_names();
-    let proc =
-        PatternCountProcessor::new(counter, args.grep.range, args.grep.header, pattern_names);
+    let proc = PatternCountProcessor::new(
+        counter,
+        args.grep.range.unwrap_or_default(),
+        args.grep.header,
+        pattern_names,
+    );
     if let Some(span) = args.input.span {
         let num_records = reader.num_records()?;
         reader.process_parallel_range(
@@ -177,7 +181,7 @@ fn build_matcher(args: &GrepCommand, paired: bool) -> Result<(PatternMatcher, bo
             &patterns.pat.bytes(),
             args.grep.fuzzy_args.distance,
             args.grep.fuzzy_args.inexact,
-            args.grep.range.map_or(0, |r| r.offset()),
+            args.grep.range.unwrap_or_default().offset(),
             args.grep.fuzzy_args.max_n_frac,
         )?;
         return Ok((PatternMatcher::Fuzzy(Box::new(matcher)), and_logic));
@@ -198,7 +202,7 @@ fn build_matcher(args: &GrepCommand, paired: bool) -> Result<(PatternMatcher, bo
             &patterns.pat2.bytes(),
             &patterns.pat.bytes(),
             args.grep.no_dfa,
-            args.grep.range.map_or(0, |r| r.offset()),
+            args.grep.range.unwrap_or_default().offset(),
         )?;
         Ok((PatternMatcher::AhoCorasick(matcher), and_logic))
     } else {
@@ -209,7 +213,7 @@ fn build_matcher(args: &GrepCommand, paired: bool) -> Result<(PatternMatcher, bo
             patterns.pat1.regexes()?,
             patterns.pat2.regexes()?,
             patterns.pat.regexes()?,
-            args.grep.range.map_or(0, |r| r.offset()),
+            args.grep.range.unwrap_or_default().offset(),
         );
         Ok((PatternMatcher::Regex(matcher), and_logic))
     }
@@ -230,7 +234,7 @@ fn run_grep(
         args.grep.invert,
         count,
         args.grep.frac,
-        args.grep.range,
+        args.grep.range.unwrap_or_default(),
         args.grep.header,
         writer,
         format,

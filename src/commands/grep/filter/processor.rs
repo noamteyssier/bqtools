@@ -31,7 +31,7 @@ pub struct FilterProcessor<Pm: PatternMatch> {
     frac: bool,
 
     /// Match within range
-    range: Option<SimpleRange>,
+    range: SimpleRange,
 
     /// Match against the sequence header instead of the sequence
     header: bool,
@@ -76,7 +76,7 @@ impl<Pm: PatternMatch> FilterProcessor<Pm> {
         invert: bool,
         count: bool,
         frac: bool,
-        range: Option<SimpleRange>,
+        range: SimpleRange,
         header: bool,
         writer: SplitWriter,
         format: FileFormat,
@@ -116,11 +116,7 @@ impl<Pm: PatternMatch> FilterProcessor<Pm> {
     }
 
     pub fn pattern_match(&mut self, sbuf: &[u8], xbuf: &[u8]) -> bool {
-        let (primary, extended) = if let Some(range) = self.range {
-            (range.slice(sbuf), range.slice(xbuf))
-        } else {
-            (sbuf, xbuf)
-        };
+        let (primary, extended) = (self.range.slice(sbuf), self.range.slice(xbuf));
 
         let found_either = self.matcher.match_either(
             primary,

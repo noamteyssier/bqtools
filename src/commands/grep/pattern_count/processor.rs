@@ -40,7 +40,7 @@ impl<'a> PatternCountResult<'a> {
 #[derive(Clone)]
 pub struct PatternCountProcessor<Pc: PatternCount> {
     counter: Pc,
-    range: Option<SimpleRange>,
+    range: SimpleRange,
     header: bool,
     pattern_names: Vec<String>,
 
@@ -52,12 +52,7 @@ pub struct PatternCountProcessor<Pc: PatternCount> {
     global_total: Arc<AtomicUsize>, // total number of reads processed
 }
 impl<Pc: PatternCount> PatternCountProcessor<Pc> {
-    pub fn new(
-        counter: Pc,
-        range: Option<SimpleRange>,
-        header: bool,
-        pattern_names: Vec<String>,
-    ) -> Self {
+    pub fn new(counter: Pc, range: SimpleRange, header: bool, pattern_names: Vec<String>) -> Self {
         let num_patterns = counter.num_patterns();
         Self {
             counter,
@@ -90,13 +85,10 @@ impl<Pc: PatternCount> ParallelProcessor for PatternCountProcessor<Pc> {
         let (primary, extended) = if self.header {
             (record.sheader(), record.xheader())
         } else {
-            let sbuf = record.sseq();
-            let xbuf = record.xseq();
-            if let Some(range) = self.range {
-                (range.slice(sbuf), range.slice(xbuf))
-            } else {
-                (sbuf, xbuf)
-            }
+            (
+                self.range.slice(record.sseq()),
+                self.range.slice(record.xseq()),
+            )
         };
 
         self.counter
