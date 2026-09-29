@@ -1,17 +1,13 @@
 use anyhow::Result;
 use binseq::BinseqRecord;
 use serde::Serialize;
-use std::sync::Mutex;
-use std::{io::Write, ops::Div, path::Path, sync::Arc};
+use std::{io::Write, ops::Div, path::Path};
 
 use super::{
-    report::{add_assign, stats, table, write_tsv},
+    report::{add_assign, stats, table, write_tsv, Hist, Pair},
     QualAbundance, DEFAULT_QUAL_ABUNDANCE, PHRED_OFFSET,
 };
-use crate::commands::{match_output, qc::modules::QcModule};
-
-const SEQ_QUALITY_PRIMARY_PATH: &str = "seq_quality_R1.tsv";
-const SEQ_QUALITY_EXTENDED_PATH: &str = "seq_quality_R2.tsv";
+use crate::commands::qc::modules::QcModule;
 
 #[derive(Serialize)]
 struct SeqQualityRecord {
@@ -31,25 +27,6 @@ impl Default for QualHistogram {
     }
 }
 impl QualHistogram {
-    fn is_empty(&self) -> bool {
-        self.inner.iter().copied().sum::<usize>() == 0
-    }
-
-    fn summary_table(&self) -> Option<String> {
-        if self.is_empty() {
-            return None;
-        }
-        let (total, mean, median, _) = stats(&self.inner);
-        Some(table(
-            &["Metric", "Value"],
-            &[
-                vec!["Reads".into(), total.to_string()],
-                vec!["Mean Quality".into(), format!("{mean:.2}")],
-                vec!["Median Quality".into(), median.to_string()],
-            ],
-        ))
-    }
-
     #[allow(clippy::cast_sign_loss)]
     fn push(&mut self, qual: &[u8]) {
         if qual.is_empty() {
@@ -61,6 +38,11 @@ impl QualHistogram {
             .sum();
         let binned_mean = (total as f64).div(&(qual.len() as f64)).round() as usize;
         self.inner[binned_mean.min(self.inner.len() - 1)] += 1;
+    }
+}
+impl Hist for QualHistogram {
+    fn is_empty(&self) -> bool {
+        self.inner.iter().copied().sum::<usize>() == 0
     }
 
     fn ingest(&mut self, other: &mut Self) {
@@ -80,54 +62,44 @@ impl QualHistogram {
                 .map(|(qual, &count)| SeqQualityRecord { qual, count }),
         )
     }
+
+    fn summary_table(&self) -> Option<String> {
+        if self.is_empty() {
+            return None;
+        }
+        let (total, mean, median, _) = stats(&self.inner);
+        Some(table(
+            &["Metric", "Value"],
+            &[
+                vec!["Reads".into(), total.to_string()],
+                vec!["Mean Quality".into(), format!("{mean:.2}")],
+                vec!["Median Quality".into(), median.to_string()],
+            ],
+        ))
+    }
 }
 
 #[derive(Default, Clone)]
-pub struct PerSequenceQuality {
-    t_seq_squal: QualHistogram,
-    t_seq_xqual: QualHistogram,
-
-    seq_squal: Arc<Mutex<QualHistogram>>,
-    seq_xqual: Arc<Mutex<QualHistogram>>,
-}
+pub struct PerSequenceQuality(Pair<QualHistogram>);
 impl QcModule for PerSequenceQuality {
     fn push<R: BinseqRecord>(&mut self, record: &R) {
-        self.t_seq_squal.push(record.squal());
-        self.t_seq_xqual.push(record.xqual());
+        self.0.t[0].push(record.squal());
+        self.0.t[1].push(record.xqual());
     }
 
     fn sync_final(&mut self) {
-        self.seq_squal.lock().unwrap().ingest(&mut self.t_seq_squal);
-        self.seq_xqual.lock().unwrap().ingest(&mut self.t_seq_xqual);
+        self.0.sync_final();
     }
 
     fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
         if !outdir.as_ref().exists() {
             std::fs::create_dir_all(outdir.as_ref())?;
         }
-
-        let write_to = |seq_qual: &QualHistogram, primary: bool| -> Result<()> {
-            if seq_qual.is_empty() {
-                return Ok(());
-            }
-            let mut handle = if primary {
-                match_output(Some(outdir.as_ref().join(SEQ_QUALITY_PRIMARY_PATH)))
-            } else {
-                match_output(Some(outdir.as_ref().join(SEQ_QUALITY_EXTENDED_PATH)))
-            }?;
-            seq_qual.serialize_to(&mut handle)
-        };
-
-        write_to(&self.seq_squal.lock().unwrap(), true)?;
-        write_to(&self.seq_xqual.lock().unwrap(), false)?;
-
-        Ok(())
+        self.0.write(outdir.as_ref(), "seq_quality")
     }
 
     fn summarize(&self) -> String {
-        let primary = self.seq_squal.lock().unwrap().summary_table();
-        let extended = self.seq_xqual.lock().unwrap().summary_table();
-        super::report::dual_section("Per-Sequence Quality", primary, extended)
+        self.0.summarize("Per-Sequence Quality")
     }
 }
 

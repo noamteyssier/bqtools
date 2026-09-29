@@ -1,15 +1,11 @@
-use std::{io::Write, path::Path, sync::Arc};
+use std::{io::Write, path::Path};
 
 use anyhow::Result;
 use binseq::BinseqRecord;
 use serde::Serialize;
-use std::sync::Mutex;
 
-use super::report::{add_assign, pct, table, write_tsv};
-use crate::commands::{match_output, qc::modules::QcModule};
-
-const BASE_CONTENT_PRIMARY_PATH: &str = "base_content_R1.tsv";
-const BASE_CONTENT_EXTENDED_PATH: &str = "base_content_R2.tsv";
+use super::report::{add_assign, pct, table, write_tsv, Hist, Pair};
+use crate::commands::qc::modules::QcModule;
 
 const NUM_BASES: usize = 5;
 const IDX_A: usize = 0;
@@ -70,10 +66,6 @@ pub struct BaseContentHistogram {
     inner: Vec<BaseAbundance>,
 }
 impl BaseContentHistogram {
-    /// Checks if empty
-    fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
     /// Number of positions tracked
     fn len(&self) -> usize {
         self.inner.len()
@@ -92,6 +84,24 @@ impl BaseContentHistogram {
                 pos_vec[base_index(base)] += 1;
             });
     }
+
+    /// Aggregate base composition across all positions.
+    fn totals(&self) -> BaseAbundance {
+        let mut totals = DEFAULT_BASE_ABUNDANCE;
+        for counts in &self.inner {
+            for (t, &c) in totals.iter_mut().zip(counts.iter()) {
+                *t += c;
+            }
+        }
+        totals
+    }
+}
+impl Hist for BaseContentHistogram {
+    /// Checks if empty
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
     fn ingest(&mut self, other: &mut Self) {
         if self.len() < other.len() {
             self.inner.resize(other.len(), DEFAULT_BASE_ABUNDANCE);
@@ -100,6 +110,7 @@ impl BaseContentHistogram {
             add_assign(dst, src);
         }
     }
+
     fn serialize_to<W: Write>(&self, wtr: &mut W) -> Result<()> {
         if self.is_empty() {
             return Ok(());
@@ -125,17 +136,6 @@ impl BaseContentHistogram {
                 }
             }),
         )
-    }
-
-    /// Aggregate base composition across all positions.
-    fn totals(&self) -> BaseAbundance {
-        let mut totals = DEFAULT_BASE_ABUNDANCE;
-        for counts in &self.inner {
-            for (t, &c) in totals.iter_mut().zip(counts.iter()) {
-                *t += c;
-            }
-        }
-        totals
     }
 
     fn summary_table(&self) -> Option<String> {
@@ -180,61 +180,26 @@ impl BaseContentHistogram {
 }
 
 #[derive(Clone, Default)]
-pub struct PerBaseSequenceContent {
-    /// thread - per base sequence content (primary)
-    t_base_content: BaseContentHistogram,
-    /// thread - per base sequence content (extended)
-    t_base_xcontent: BaseContentHistogram,
-
-    /// global - per base sequence content (primary)
-    base_content: Arc<Mutex<BaseContentHistogram>>,
-    /// global - per base sequence content (extended)
-    base_xcontent: Arc<Mutex<BaseContentHistogram>>,
-}
+pub struct PerBaseSequenceContent(Pair<BaseContentHistogram>);
 impl QcModule for PerBaseSequenceContent {
     fn push<R: BinseqRecord>(&mut self, record: &R) {
-        self.t_base_content.push(record.sseq());
-        self.t_base_xcontent.push(record.xseq());
+        self.0.t[0].push(record.sseq());
+        self.0.t[1].push(record.xseq());
     }
 
     fn sync_final(&mut self) {
-        self.base_content
-            .lock()
-            .unwrap()
-            .ingest(&mut self.t_base_content);
-        self.base_xcontent
-            .lock()
-            .unwrap()
-            .ingest(&mut self.t_base_xcontent);
+        self.0.sync_final();
     }
 
     fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
         if !outdir.as_ref().exists() {
             std::fs::create_dir_all(outdir.as_ref())?;
         }
-
-        let write_to = |base_content: &BaseContentHistogram, primary: bool| -> Result<()> {
-            if base_content.is_empty() {
-                return Ok(());
-            }
-            let mut handle = if primary {
-                match_output(Some(outdir.as_ref().join(BASE_CONTENT_PRIMARY_PATH)))
-            } else {
-                match_output(Some(outdir.as_ref().join(BASE_CONTENT_EXTENDED_PATH)))
-            }?;
-            base_content.serialize_to(&mut handle)
-        };
-
-        write_to(&self.base_content.lock().unwrap(), true)?;
-        write_to(&self.base_xcontent.lock().unwrap(), false)?;
-
-        Ok(())
+        self.0.write(outdir.as_ref(), "base_content")
     }
 
     fn summarize(&self) -> String {
-        let primary = self.base_content.lock().unwrap().summary_table();
-        let extended = self.base_xcontent.lock().unwrap().summary_table();
-        super::report::dual_section("Per-Base Sequence Content", primary, extended)
+        self.0.summarize("Per-Base Sequence Content")
     }
 }
 

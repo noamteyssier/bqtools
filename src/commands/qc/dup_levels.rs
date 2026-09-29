@@ -1,22 +1,16 @@
-use std::{io::Write, path::Path, sync::Arc};
+use std::{io::Write, path::Path};
 
 use anyhow::Result;
 use binseq::BinseqRecord;
 use hashbrown::HashMap;
 use log::trace;
 use serde::Serialize;
-use std::sync::Mutex;
 
-use super::report::{dual_section, pct, table, write_tsv};
+use super::report::{dual_section, pct, table, write_tsv, Hist, Pair};
 use crate::{
     cli::QcOptions,
     commands::{match_output, qc::modules::QcModule},
 };
-
-const DUPLICATION_LEVELS_PRIMARY_PATH: &str = "duplication_levels_R1.tsv";
-const DUPLICATION_LEVELS_EXTENDED_PATH: &str = "duplication_levels_R2.tsv";
-const OVERREPRESENTED_PRIMARY_PATH: &str = "overrepresented_sequences_R1.tsv";
-const OVERREPRESENTED_EXTENDED_PATH: &str = "overrepresented_sequences_R2.tsv";
 
 /// FastQC-style duplication level buckets: exact counts 1-9, then cumulative
 /// thresholds beyond that.
@@ -97,52 +91,6 @@ impl DuplicationCounter {
             self.inner.insert(seq.into(), 1);
         }
     }
-    /// Merges `other`'s counts into `self`, consuming `other`.
-    ///
-    /// This runs once per thread at `sync_final` (not per batch), by which
-    /// point `other` (a thread's local counts) is done accumulating for
-    /// good - a plain drain is correct and there's no reason to keep its
-    /// keys around for reuse.
-    fn ingest(&mut self, other: &mut Self) {
-        for (seq, count) in other.inner.drain() {
-            *self.inner.entry(seq).or_insert(0) += count;
-        }
-    }
-    fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
-    /// Writes the bucketed duplication-level report (see [`DuplicationRecord`]).
-    fn serialize_levels_to<W: Write>(&self, wtr: &mut W) -> Result<()> {
-        if self.is_empty() {
-            return Ok(());
-        }
-
-        let mut distinct_buckets = vec![0usize; LEVELS.len()];
-        let mut total_buckets = vec![0usize; LEVELS.len()];
-        let total_distinct = self.inner.len();
-        let total_reads: usize = self.inner.values().map(|&count| count as usize).sum();
-
-        for &count in self.inner.values() {
-            let count = count as usize;
-            let idx = LEVELS.iter().rposition(|&lvl| lvl <= count).unwrap_or(0);
-            distinct_buckets[idx] += 1;
-            total_buckets[idx] += count;
-        }
-
-        write_tsv(
-            wtr,
-            LABELS
-                .iter()
-                .enumerate()
-                .map(|(idx, &level)| DuplicationRecord {
-                    level,
-                    distinct_count: distinct_buckets[idx],
-                    distinct_pct: pct(distinct_buckets[idx], total_distinct),
-                    total_count: total_buckets[idx],
-                    total_pct: pct(total_buckets[idx], total_reads),
-                }),
-        )
-    }
 
     /// Sequences at or above `threshold_pct` of the sample, most frequent
     /// first, paired with their percentage.
@@ -189,22 +137,6 @@ impl DuplicationCounter {
         self.inner.values().map(|&count| count as usize).sum()
     }
 
-    fn summary_table(&self) -> Option<String> {
-        if self.is_empty() {
-            return None;
-        }
-        let distinct = self.inner.len();
-        let total = self.total_reads();
-        Some(table(
-            &["Metric", "Value"],
-            &[
-                vec!["Sampled Reads".into(), total.to_string()],
-                vec!["Distinct Sequences".into(), distinct.to_string()],
-                vec!["Pct Unique".into(), format!("{:.2}%", pct(distinct, total))],
-            ],
-        ))
-    }
-
     /// Top overrepresented sequences (most frequent first), capped at
     /// [`OVERREPRESENTED_SUMMARY_LIMIT`] for the summary report.
     fn overrepresented_table(&self, threshold_pct: f64) -> Option<String> {
@@ -226,6 +158,72 @@ impl DuplicationCounter {
         Some(table(&["Sequence", "Count", "Pct"], &rows))
     }
 }
+impl Hist for DuplicationCounter {
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Merges `other`'s counts into `self`, consuming `other`.
+    ///
+    /// This runs once per thread at `sync_final` (not per batch), by which
+    /// point `other` (a thread's local counts) is done accumulating for
+    /// good - a plain drain is correct and there's no reason to keep its
+    /// keys around for reuse.
+    fn ingest(&mut self, other: &mut Self) {
+        for (seq, count) in other.inner.drain() {
+            *self.inner.entry(seq).or_insert(0) += count;
+        }
+    }
+
+    /// Writes the bucketed duplication-level report (see [`DuplicationRecord`]).
+    fn serialize_to<W: Write>(&self, wtr: &mut W) -> Result<()> {
+        if self.is_empty() {
+            return Ok(());
+        }
+
+        let mut distinct_buckets = vec![0usize; LEVELS.len()];
+        let mut total_buckets = vec![0usize; LEVELS.len()];
+        let total_distinct = self.inner.len();
+        let total_reads: usize = self.inner.values().map(|&count| count as usize).sum();
+
+        for &count in self.inner.values() {
+            let count = count as usize;
+            let idx = LEVELS.iter().rposition(|&lvl| lvl <= count).unwrap_or(0);
+            distinct_buckets[idx] += 1;
+            total_buckets[idx] += count;
+        }
+
+        write_tsv(
+            wtr,
+            LABELS
+                .iter()
+                .enumerate()
+                .map(|(idx, &level)| DuplicationRecord {
+                    level,
+                    distinct_count: distinct_buckets[idx],
+                    distinct_pct: pct(distinct_buckets[idx], total_distinct),
+                    total_count: total_buckets[idx],
+                    total_pct: pct(total_buckets[idx], total_reads),
+                }),
+        )
+    }
+
+    fn summary_table(&self) -> Option<String> {
+        if self.is_empty() {
+            return None;
+        }
+        let distinct = self.inner.len();
+        let total = self.total_reads();
+        Some(table(
+            &["Metric", "Value"],
+            &[
+                vec!["Sampled Reads".into(), total.to_string()],
+                vec!["Distinct Sequences".into(), distinct.to_string()],
+                vec!["Pct Unique".into(), format!("{:.2}%", pct(distinct, total))],
+            ],
+        ))
+    }
+}
 
 #[derive(Clone)]
 pub struct SequenceDuplicationLevels {
@@ -239,16 +237,7 @@ pub struct SequenceDuplicationLevels {
     /// Minimum percentage of sampled reads a sequence must represent to be
     /// flagged as overrepresented.
     overrepresented_threshold: f64,
-
-    /// thread - duplication counts (primary)
-    t_dup: DuplicationCounter,
-    /// thread - duplication counts (extended)
-    t_xdup: DuplicationCounter,
-
-    /// global - duplication counts (primary)
-    dup: Arc<Mutex<DuplicationCounter>>,
-    /// global - duplication counts (extended)
-    xdup: Arc<Mutex<DuplicationCounter>>,
+    counts: Pair<DuplicationCounter>,
 }
 impl SequenceDuplicationLevels {
     /// Both `emit_levels` and `emit_overrepresented` read from the same
@@ -261,10 +250,7 @@ impl SequenceDuplicationLevels {
             emit_levels: !opts.skip_dup_levels,
             emit_overrepresented: !opts.skip_overrepresented,
             overrepresented_threshold: opts.overrepresented_threshold,
-            t_dup: DuplicationCounter::default(),
-            t_xdup: DuplicationCounter::default(),
-            dup: Arc::default(),
-            xdup: Arc::default(),
+            counts: Pair::default(),
         }
     }
 }
@@ -276,66 +262,43 @@ impl QcModule for SequenceDuplicationLevels {
         {
             return;
         }
-        self.t_dup.push(record.sseq());
+        self.counts.t[0].push(record.sseq());
         if record.is_paired() {
-            self.t_xdup.push(record.xseq());
+            self.counts.t[1].push(record.xseq());
         }
     }
 
     fn sync_final(&mut self) {
-        self.dup.lock().unwrap().ingest(&mut self.t_dup);
-        self.xdup.lock().unwrap().ingest(&mut self.t_xdup);
+        self.counts.sync_final();
     }
 
     fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
-        if !outdir.as_ref().exists() {
-            std::fs::create_dir_all(outdir.as_ref())?;
+        let outdir = outdir.as_ref();
+        if !outdir.exists() {
+            std::fs::create_dir_all(outdir)?;
         }
 
-        let write_to = |counter: &DuplicationCounter,
-                        dup_path: &str,
-                        overrep_path: &str,
-                        label: &str|
-         -> Result<()> {
-            if counter.is_empty() {
-                return Ok(());
-            }
-            if self.emit_levels {
-                let mut handle = match_output(Some(outdir.as_ref().join(dup_path)))?;
-                counter.serialize_levels_to(&mut handle)?;
-            }
-            if self.emit_overrepresented {
+        if self.emit_levels {
+            self.counts.write(outdir, "duplication_levels")?;
+        }
+        if self.emit_overrepresented {
+            self.counts.each(|counter, side| {
                 if counter
                     .overrepresented(self.overrepresented_threshold)
                     .is_empty()
                 {
                     trace!(
-                        "No {label} sequences met the overrepresented threshold ({}%)",
+                        "No {side} sequences met the overrepresented threshold ({}%)",
                         self.overrepresented_threshold
                     );
-                } else {
-                    let mut handle = match_output(Some(outdir.as_ref().join(overrep_path)))?;
-                    counter.serialize_overrepresented_to(
-                        &mut handle,
-                        self.overrepresented_threshold,
-                    )?;
+                    return Ok(());
                 }
-            }
-            Ok(())
-        };
-
-        write_to(
-            &self.dup.lock().unwrap(),
-            DUPLICATION_LEVELS_PRIMARY_PATH,
-            OVERREPRESENTED_PRIMARY_PATH,
-            "R1",
-        )?;
-        write_to(
-            &self.xdup.lock().unwrap(),
-            DUPLICATION_LEVELS_EXTENDED_PATH,
-            OVERREPRESENTED_EXTENDED_PATH,
-            "R2",
-        )?;
+                let mut handle = match_output(Some(
+                    outdir.join(format!("overrepresented_sequences_{side}.tsv")),
+                ))?;
+                counter.serialize_overrepresented_to(&mut handle, self.overrepresented_threshold)
+            })?;
+        }
 
         Ok(())
     }
@@ -344,26 +307,13 @@ impl QcModule for SequenceDuplicationLevels {
         let mut out = String::new();
 
         if self.emit_levels {
-            let primary = self.dup.lock().unwrap().summary_table();
-            let extended = self.xdup.lock().unwrap().summary_table();
-            out.push_str(&dual_section(
-                "Sequence Duplication Levels",
-                primary,
-                extended,
-            ));
+            out.push_str(&self.counts.summarize("Sequence Duplication Levels"));
         }
 
         if self.emit_overrepresented {
-            let primary = self
-                .dup
-                .lock()
-                .unwrap()
-                .overrepresented_table(self.overrepresented_threshold);
-            let extended = self
-                .xdup
-                .lock()
-                .unwrap()
-                .overrepresented_table(self.overrepresented_threshold);
+            let (primary, extended) = self
+                .counts
+                .map(|c| c.overrepresented_table(self.overrepresented_threshold));
             let section = dual_section("Overrepresented Sequences", primary, extended);
             if !section.is_empty() {
                 if !out.is_empty() {

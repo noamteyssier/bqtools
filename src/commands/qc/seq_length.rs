@@ -1,15 +1,11 @@
-use std::{io::Write, path::Path, sync::Arc};
+use std::{io::Write, path::Path};
 
 use anyhow::Result;
 use binseq::BinseqRecord;
 use serde::Serialize;
-use std::sync::Mutex;
 
-use super::report::{add_assign, stats, table, write_tsv};
-use crate::commands::{match_output, qc::modules::QcModule};
-
-const SEQ_LENGTH_PRIMARY_PATH: &str = "seq_length_R1.tsv";
-const SEQ_LENGTH_EXTENDED_PATH: &str = "seq_length_R2.tsv";
+use super::report::{add_assign, stats, table, write_tsv, Hist, Pair};
+use crate::commands::qc::modules::QcModule;
 
 #[derive(Serialize)]
 pub struct SeqLenRecord {
@@ -23,9 +19,6 @@ pub struct SeqLenHistogram {
     inner: Vec<usize>,
 }
 impl SeqLenHistogram {
-    fn is_empty(&self) -> bool {
-        self.inner.iter().copied().sum::<usize>() == 0
-    }
     fn len(&self) -> usize {
         self.inner.len()
     }
@@ -39,12 +32,27 @@ impl SeqLenHistogram {
         }
         self.inner[len] += 1;
     }
+
+    fn min_len(&self) -> Option<usize> {
+        self.inner.iter().position(|&c| c > 0)
+    }
+
+    fn max_len(&self) -> Option<usize> {
+        self.inner.iter().rposition(|&c| c > 0)
+    }
+}
+impl Hist for SeqLenHistogram {
+    fn is_empty(&self) -> bool {
+        self.inner.iter().copied().sum::<usize>() == 0
+    }
+
     fn ingest(&mut self, other: &mut Self) {
         if self.len() < other.len() {
             self.inner.resize(other.len(), 0);
         }
         add_assign(&mut self.inner, &mut other.inner);
     }
+
     fn serialize_to<W: Write>(&self, wtr: &mut W) -> Result<()> {
         if self.is_empty() {
             return Ok(());
@@ -58,14 +66,6 @@ impl SeqLenHistogram {
                 .filter(|(_, &count)| count > 0)
                 .map(|(len, &count)| SeqLenRecord { len, count }),
         )
-    }
-
-    fn min_len(&self) -> Option<usize> {
-        self.inner.iter().position(|&c| c > 0)
-    }
-
-    fn max_len(&self) -> Option<usize> {
-        self.inner.iter().rposition(|&c| c > 0)
     }
 
     fn summary_table(&self) -> Option<String> {
@@ -87,55 +87,26 @@ impl SeqLenHistogram {
 }
 
 #[derive(Clone, Default)]
-pub struct SequenceLengthDistribution {
-    /// thread - sequence length distribution (primary)
-    t_slen: SeqLenHistogram,
-    /// thread - sequence length distribution (extended)
-    t_xlen: SeqLenHistogram,
-
-    /// global - sequence length distribution (primary)
-    slen: Arc<Mutex<SeqLenHistogram>>,
-    /// global - sequence length distribution (extended)
-    xlen: Arc<Mutex<SeqLenHistogram>>,
-}
+pub struct SequenceLengthDistribution(Pair<SeqLenHistogram>);
 impl QcModule for SequenceLengthDistribution {
     fn push<R: BinseqRecord>(&mut self, record: &R) {
-        self.t_slen.push(record.slen() as usize);
-        self.t_xlen.push(record.xlen() as usize);
+        self.0.t[0].push(record.slen() as usize);
+        self.0.t[1].push(record.xlen() as usize);
     }
 
     fn sync_final(&mut self) {
-        self.slen.lock().unwrap().ingest(&mut self.t_slen);
-        self.xlen.lock().unwrap().ingest(&mut self.t_xlen);
+        self.0.sync_final();
     }
 
     fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
         if !outdir.as_ref().exists() {
             std::fs::create_dir_all(outdir.as_ref())?;
         }
-
-        let write_to = |hist: &SeqLenHistogram, primary: bool| -> Result<()> {
-            if hist.is_empty() {
-                return Ok(());
-            }
-            let mut handle = if primary {
-                match_output(Some(outdir.as_ref().join(SEQ_LENGTH_PRIMARY_PATH)))
-            } else {
-                match_output(Some(outdir.as_ref().join(SEQ_LENGTH_EXTENDED_PATH)))
-            }?;
-            hist.serialize_to(&mut handle)
-        };
-
-        write_to(&self.slen.lock().unwrap(), true)?;
-        write_to(&self.xlen.lock().unwrap(), false)?;
-
-        Ok(())
+        self.0.write(outdir.as_ref(), "seq_length")
     }
 
     fn summarize(&self) -> String {
-        let primary = self.slen.lock().unwrap().summary_table();
-        let extended = self.xlen.lock().unwrap().summary_table();
-        super::report::dual_section("Sequence Length Distribution", primary, extended)
+        self.0.summarize("Sequence Length Distribution")
     }
 }
 

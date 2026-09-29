@@ -1,14 +1,10 @@
 use anyhow::Result;
 use binseq::BinseqRecord;
 use serde::Serialize;
-use std::sync::Mutex;
-use std::{io::Write, path::Path, sync::Arc};
+use std::{io::Write, path::Path};
 
-use super::report::{add_assign, stats, table, write_tsv};
-use crate::commands::{match_output, qc::modules::QcModule};
-
-const GC_CONTENT_PRIMARY_PATH: &str = "gc_content_R1.tsv";
-const GC_CONTENT_EXTENDED_PATH: &str = "gc_content_R2.tsv";
+use super::report::{add_assign, stats, table, write_tsv, Hist, Pair};
+use crate::commands::qc::modules::QcModule;
 
 /// Percentage bins: 0..=100
 const NUM_GC_BINS: usize = 101;
@@ -38,10 +34,6 @@ impl Default for GcHistogram {
     }
 }
 impl GcHistogram {
-    fn is_empty(&self) -> bool {
-        self.inner.iter().copied().sum::<usize>() == 0
-    }
-
     /// Bin a whole read by the percentage of G/C bases it contains.
     #[allow(clippy::cast_sign_loss)]
     fn push(&mut self, seq: &[u8]) {
@@ -51,6 +43,11 @@ impl GcHistogram {
         let gc = seq.iter().copied().filter(|&b| is_gc(b)).count();
         let pct_gc = ((gc as f64 / seq.len() as f64) * 100.0).round() as usize;
         self.inner[pct_gc.min(self.inner.len() - 1)] += 1;
+    }
+}
+impl Hist for GcHistogram {
+    fn is_empty(&self) -> bool {
+        self.inner.iter().copied().sum::<usize>() == 0
     }
 
     fn ingest(&mut self, other: &mut Self) {
@@ -89,51 +86,26 @@ impl GcHistogram {
 }
 
 #[derive(Default, Clone)]
-pub struct PerSequenceGcContent {
-    t_seq_gc: GcHistogram,
-    t_seq_xgc: GcHistogram,
-
-    seq_gc: Arc<Mutex<GcHistogram>>,
-    seq_xgc: Arc<Mutex<GcHistogram>>,
-}
+pub struct PerSequenceGcContent(Pair<GcHistogram>);
 impl QcModule for PerSequenceGcContent {
     fn push<R: BinseqRecord>(&mut self, record: &R) {
-        self.t_seq_gc.push(record.sseq());
-        self.t_seq_xgc.push(record.xseq());
+        self.0.t[0].push(record.sseq());
+        self.0.t[1].push(record.xseq());
     }
 
     fn sync_final(&mut self) {
-        self.seq_gc.lock().unwrap().ingest(&mut self.t_seq_gc);
-        self.seq_xgc.lock().unwrap().ingest(&mut self.t_seq_xgc);
+        self.0.sync_final();
     }
 
     fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
         if !outdir.as_ref().exists() {
             std::fs::create_dir_all(outdir.as_ref())?;
         }
-
-        let write_to = |seq_gc: &GcHistogram, primary: bool| -> Result<()> {
-            if seq_gc.is_empty() {
-                return Ok(());
-            }
-            let mut handle = if primary {
-                match_output(Some(outdir.as_ref().join(GC_CONTENT_PRIMARY_PATH)))
-            } else {
-                match_output(Some(outdir.as_ref().join(GC_CONTENT_EXTENDED_PATH)))
-            }?;
-            seq_gc.serialize_to(&mut handle)
-        };
-
-        write_to(&self.seq_gc.lock().unwrap(), true)?;
-        write_to(&self.seq_xgc.lock().unwrap(), false)?;
-
-        Ok(())
+        self.0.write(outdir.as_ref(), "gc_content")
     }
 
     fn summarize(&self) -> String {
-        let primary = self.seq_gc.lock().unwrap().summary_table();
-        let extended = self.seq_xgc.lock().unwrap().summary_table();
-        super::report::dual_section("Per-Sequence GC Content", primary, extended)
+        self.0.summarize("Per-Sequence GC Content")
     }
 }
 

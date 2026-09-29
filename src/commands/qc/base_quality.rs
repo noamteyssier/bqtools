@@ -1,18 +1,14 @@
-use std::{io::Write, path::Path, sync::Arc};
+use std::{io::Write, path::Path};
 
 use anyhow::Result;
 use binseq::BinseqRecord;
 use serde::Serialize;
-use std::sync::Mutex;
 
 use super::{
-    report::{add_assign, stats, table, write_tsv},
+    report::{add_assign, stats, table, write_tsv, Hist, Pair},
     QualAbundance, DEFAULT_QUAL_ABUNDANCE, PHRED_OFFSET,
 };
-use crate::commands::{match_output, qc::modules::QcModule};
-
-const BASE_QUALITY_PRIMARY_PATH: &str = "base_quality_R1.tsv";
-const BASE_QUALITY_EXTENDED_PATH: &str = "base_quality_R2.tsv";
+use crate::commands::qc::modules::QcModule;
 
 #[derive(Serialize)]
 pub struct BaseQualityRecord {
@@ -28,10 +24,6 @@ pub struct BaseHistogram {
     inner: Vec<QualAbundance>,
 }
 impl BaseHistogram {
-    /// Checks if empty
-    fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
     /// Number of positions tracked
     fn len(&self) -> usize {
         self.inner.len()
@@ -51,6 +43,18 @@ impl BaseHistogram {
                 pos_vec[q.min(pos_vec.len() - 1)] += 1;
             });
     }
+
+    /// Mean quality score at each position.
+    fn position_means(&self) -> Vec<f64> {
+        self.inner.iter().map(|counts| stats(counts).1).collect()
+    }
+}
+impl Hist for BaseHistogram {
+    /// Checks if empty
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
     fn ingest(&mut self, other: &mut Self) {
         if self.len() < other.len() {
             self.inner.resize(other.len(), DEFAULT_QUAL_ABUNDANCE);
@@ -59,6 +63,7 @@ impl BaseHistogram {
             add_assign(dst, src);
         }
     }
+
     fn serialize_to<W: Write>(&self, wtr: &mut W) -> Result<()> {
         if self.is_empty() {
             return Ok(());
@@ -74,11 +79,6 @@ impl BaseHistogram {
                     .map(move |(qual, &count)| BaseQualityRecord { pos, qual, count })
             }),
         )
-    }
-
-    /// Mean quality score at each position.
-    fn position_means(&self) -> Vec<f64> {
-        self.inner.iter().map(|counts| stats(counts).1).collect()
     }
 
     fn summary_table(&self) -> Option<String> {
@@ -133,70 +133,26 @@ impl BaseHistogram {
 }
 
 #[derive(Clone, Default)]
-pub struct PerBaseSequenceQuality {
-    /// thread - per base sequence quality (primary)
-    t_base_squal: BaseHistogram,
-    /// thread - per base sequence quality (extended)
-    t_base_xqual: BaseHistogram,
-    /// thread - number of records
-    t_n_records: usize,
-
-    /// global - per base sequence quality (primary)
-    base_squal: Arc<Mutex<BaseHistogram>>,
-    /// global - per base sequence quality (extended)
-    base_xqual: Arc<Mutex<BaseHistogram>>,
-    /// global - number of records
-    n_records: Arc<Mutex<usize>>,
-}
+pub struct PerBaseSequenceQuality(Pair<BaseHistogram>);
 impl QcModule for PerBaseSequenceQuality {
     fn push<R: BinseqRecord>(&mut self, record: &R) {
-        self.t_base_squal.push(record.squal());
-        self.t_base_xqual.push(record.xqual());
-        self.t_n_records += 1;
+        self.0.t[0].push(record.squal());
+        self.0.t[1].push(record.xqual());
     }
 
     fn sync_final(&mut self) {
-        self.base_squal
-            .lock()
-            .unwrap()
-            .ingest(&mut self.t_base_squal);
-        self.base_xqual
-            .lock()
-            .unwrap()
-            .ingest(&mut self.t_base_xqual);
-
-        // handle total
-        *self.n_records.lock().unwrap() += self.t_n_records;
-        self.t_n_records = 0;
+        self.0.sync_final();
     }
 
     fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
         if !outdir.as_ref().exists() {
             std::fs::create_dir_all(outdir.as_ref())?;
         }
-
-        let write_to = |base_qual: &BaseHistogram, primary: bool| -> Result<()> {
-            if base_qual.is_empty() {
-                return Ok(());
-            }
-            let mut handle = if primary {
-                match_output(Some(outdir.as_ref().join(BASE_QUALITY_PRIMARY_PATH)))
-            } else {
-                match_output(Some(outdir.as_ref().join(BASE_QUALITY_EXTENDED_PATH)))
-            }?;
-            base_qual.serialize_to(&mut handle)
-        };
-
-        write_to(&self.base_squal.lock().unwrap(), true)?;
-        write_to(&self.base_xqual.lock().unwrap(), false)?;
-
-        Ok(())
+        self.0.write(outdir.as_ref(), "base_quality")
     }
 
     fn summarize(&self) -> String {
-        let primary = self.base_squal.lock().unwrap().summary_table();
-        let extended = self.base_xqual.lock().unwrap().summary_table();
-        super::report::dual_section("Per-Base Sequence Quality", primary, extended)
+        self.0.summarize("Per-Base Sequence Quality")
     }
 }
 
