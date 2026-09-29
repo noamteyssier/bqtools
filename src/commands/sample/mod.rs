@@ -142,7 +142,7 @@ pub fn run(args: &SampleCommand) -> Result<()> {
         None
     };
     let proc = SampleProcessor::new(args.sample.fraction, args.sample.seed, writer, format, mate);
-    if let Some(mut span) = args.input.span {
+    if let Some(span) = args.input.span {
         let num_records = reader.num_records()?;
         reader.process_parallel_range(
             proc.clone(),

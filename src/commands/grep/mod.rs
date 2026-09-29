@@ -147,7 +147,7 @@ fn run_pattern_count(args: &GrepCommand, reader: BinseqReader) -> Result<()> {
     let pattern_names = counter.pattern_names();
     let proc =
         PatternCountProcessor::new(counter, args.grep.range, args.grep.header, pattern_names);
-    if let Some(mut span) = args.input.span {
+    if let Some(span) = args.input.span {
         let num_records = reader.num_records()?;
         reader.process_parallel_range(
             proc.clone(),
@@ -238,7 +238,7 @@ fn run_grep(
         args.should_color(),
     );
 
-    if let Some(mut span) = args.input.span {
+    if let Some(span) = args.input.span {
         let num_records = reader.num_records()?;
         reader.process_parallel_range(
             proc.clone(),

@@ -54,7 +54,7 @@ pub fn run(args: &DecodeCommand) -> Result<()> {
         None
     };
     let proc = Decoder::new(writer, format, mate);
-    if let Some(mut span) = args.input.span {
+    if let Some(span) = args.input.span {
         let num_records = reader.num_records()?;
         reader.process_parallel_range(
             proc.clone(),

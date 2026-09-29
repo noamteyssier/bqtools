@@ -29,7 +29,7 @@ pub fn run(args: &QcCommand) -> Result<()> {
     let range = args
         .input
         .span
-        .map(|mut span| span.get_range(total_records))
+        .map(|span| span.get_range(total_records))
         .transpose()?;
     let processed_records = range.as_ref().map_or(total_records, |r| r.end - r.start);
 

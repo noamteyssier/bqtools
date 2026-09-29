@@ -41,7 +41,7 @@ pub fn run(args: &RevcompCommand) -> Result<()> {
     let writer = builder.build(ohandle)?;
     let mut processor = RevCompProcessor::new(writer, mate)?;
 
-    if let Some(mut span) = args.input.span {
+    if let Some(span) = args.input.span {
         let num_records = reader.num_records()?;
         reader.process_parallel_range(
             processor.clone(),

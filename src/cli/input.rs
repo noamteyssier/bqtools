@@ -89,23 +89,18 @@ impl InputFile {
     }
 
     pub fn format(&self) -> Option<FileFormat> {
-        if let Some(format) = self.format {
-            Some(format)
-        } else if self.input.len() == 1 {
-            let path = &self.input[0];
-            let p = std::path::Path::new(path);
-            if p.extension().is_some_and(|ext| {
-                ext.eq_ignore_ascii_case("bam")
-                    || ext.eq_ignore_ascii_case("sam")
-                    || ext.eq_ignore_ascii_case("cram")
-            }) {
+        self.format.or_else(|| match self.input.as_slice() {
+            [path]
+                if std::path::Path::new(path).extension().is_some_and(|ext| {
+                    ["bam", "sam", "cram"]
+                        .iter()
+                        .any(|e| ext.eq_ignore_ascii_case(e))
+                }) =>
+            {
                 Some(FileFormat::Bam)
-            } else {
-                None
             }
-        } else {
-            None
-        }
+            _ => None,
+        })
     }
 
     pub fn is_stdin(&self) -> bool {
@@ -129,8 +124,7 @@ impl InputFile {
 
     pub fn build_single_reader(&self) -> Result<fastx::Reader<BoxedReader>> {
         let path = self.single_path()?;
-        let reader = load_reader(path, self.batch_size)?;
-        Ok(reader)
+        load_reader(path, self.batch_size)
     }
 
     /// Builds a vector of readers from the input paths.
@@ -156,23 +150,22 @@ impl InputFile {
         if !self.input.len().is_multiple_of(2) {
             bail!("Input must contain an even number of paths for paired collection");
         }
-        let collection = fastx::Collection::new(
+        Ok(fastx::Collection::new(
             self.build_readers_from_paths()?,
             fastx::CollectionType::Paired,
-        )?;
-        Ok(collection)
+        )?)
     }
 
     fn build_collection_with_optional_stdin(
         &self,
         collection_type: fastx::CollectionType,
     ) -> Result<fastx::Collection<BoxedReader>> {
-        let collection = if self.input.is_empty() {
-            fastx::Collection::new(vec![self.build_single_reader()?], collection_type)
+        let readers = if self.input.is_empty() {
+            vec![self.build_single_reader()?]
         } else {
-            fastx::Collection::new(self.build_readers_from_paths()?, collection_type)
-        }?;
-        Ok(collection)
+            self.build_readers_from_paths()?
+        };
+        Ok(fastx::Collection::new(readers, collection_type)?)
     }
 }
 
@@ -180,52 +173,24 @@ fn load_reader(
     path: Option<&str>,
     batch_size: Option<usize>,
 ) -> Result<fastx::Reader<BoxedReader>> {
-    if let Some(path) = path {
-        if path.starts_with("gs://") {
-            #[cfg(not(feature = "gcs"))]
-            {
-                error!("Missing feature flag - gcs. To process Google Cloud Storage files, enable the 'gcs' feature flag.");
-                bail!("Missing feature flag - gcs");
-            }
-
-            #[cfg(feature = "gcs")]
-            return Ok(load_gcs_reader(path, batch_size)?);
+    debug!(
+        "building fastx reader (batch size: {batch_size:?}) from: {}",
+        path.unwrap_or("stdin")
+    );
+    let mut builder = match path {
+        #[cfg(feature = "gcs")]
+        Some(path) if path.starts_with("gs://") => ReaderBuilder::gcs(path),
+        #[cfg(not(feature = "gcs"))]
+        Some(path) if path.starts_with("gs://") => {
+            error!("Missing feature flag - gcs. To process Google Cloud Storage files, enable the 'gcs' feature flag.");
+            bail!("Missing feature flag - gcs");
         }
-        Ok(load_simple_reader(Some(path), batch_size)?)
-    } else {
-        Ok(load_simple_reader(None, batch_size)?)
-    }
-}
-
-fn load_simple_reader(
-    path: Option<&str>,
-    batch_size: Option<usize>,
-) -> Result<fastx::Reader<BoxedReader>, paraseq::Error> {
-    let path_display = if let Some(path) = path {
-        path.to_string()
-    } else {
-        "stdin".to_string()
+        _ => ReaderBuilder::optional_path(path),
     };
-
-    debug!("building on-disk fastx reader (batch size: {batch_size:?}) from: {path_display}");
-    let mut builder = ReaderBuilder::optional_path(path);
     if let Some(size) = batch_size {
         builder = builder.batch_size(size);
     }
-    builder.build()
-}
-
-#[cfg(feature = "gcs")]
-fn load_gcs_reader(
-    path: &str,
-    batch_size: Option<usize>,
-) -> Result<fastx::Reader<BoxedReader>, paraseq::Error> {
-    debug!("building GCS fastx reader (batch size: {batch_size:?}) from: {path}");
-    let mut builder = ReaderBuilder::gcs(path);
-    if let Some(size) = batch_size {
-        builder = builder.batch_size(size);
-    }
-    builder.build()
+    Ok(builder.build()?)
 }
 
 #[derive(Parser, Debug, Clone, PartialEq, Eq)]
@@ -292,33 +257,21 @@ pub struct Span {
     end: Option<usize>,
 }
 impl Span {
-    fn validate(&mut self, max_records: usize) -> Result<()> {
-        if let Some(start) = self.start {
-            if start > max_records {
-                error!(
-                    "Provided start ({start}) exceeds maximum number of records ({max_records})"
-                );
-                bail!("Maximum number of records exceeded")
-            }
+    pub fn get_range(&self, max_records: usize) -> Result<std::ops::Range<usize>> {
+        let start = self.start.unwrap_or(0);
+        if start > max_records {
+            error!("Provided start ({start}) exceeds maximum number of records ({max_records})");
+            bail!("Maximum number of records exceeded")
         }
-        if let Some(end) = self.end {
+        let end = self.end.map_or(max_records, |end| {
             if end > max_records {
                 warn!(
                     "Clipping provided endpoint ({end}) to maximum number of records ({max_records})"
                 );
             }
-            self.end = Some(end.min(max_records));
-        }
-        Ok(())
-    }
-    pub fn get_range(&mut self, max_records: usize) -> Result<std::ops::Range<usize>> {
-        self.validate(max_records)?;
-        match (self.start, self.end) {
-            (Some(start), Some(end)) => Ok(start..end),
-            (Some(start), None) => Ok(start..max_records),
-            (None, Some(end)) => Ok(0..end),
-            (None, None) => Ok(0..max_records),
-        }
+            end.min(max_records)
+        });
+        Ok(start..end)
     }
 }
 

@@ -119,7 +119,7 @@ pub fn run(args: &SplitCommand) -> Result<()> {
         &args.split.unmatched_basename,
     )?;
     let reader = BinseqReader::new(args.input.path())?;
-    if let Some(mut span) = args.input.span {
+    if let Some(span) = args.input.span {
         let num_records = reader.num_records()?;
         reader.process_parallel_range(
             proc.clone(),
