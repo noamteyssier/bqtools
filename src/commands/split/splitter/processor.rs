@@ -9,7 +9,7 @@ use binseq::{BinseqWriter, BinseqWriterBuilder, ParallelProcessor, SequencingRec
 use std::sync::Mutex;
 
 use crate::{
-    cli::BinseqMode,
+    cli::SplitCommand,
     commands::{
         match_output,
         split::splitter::{SequenceSplit, Splitter},
@@ -43,23 +43,22 @@ pub struct SplitProcessor {
     paths: Vec<PathBuf>,
 }
 impl SplitProcessor {
-    pub fn new<P: AsRef<Path>>(
+    pub fn new(
         matcher: Splitter,
         builder: &BinseqWriterBuilder,
-        output_basepath: P,
-        output_mode: BinseqMode,
-        write_undetermined: bool,
-        undetermined_basepath: &str,
+        args: &SplitCommand,
     ) -> Result<Self> {
+        let output_basepath = &args.split.basepath;
+        let output_mode = args.input.mode()?;
+        let write_undetermined = !args.split.skip_unmatched;
+        let undetermined_basepath = args.split.unmatched_basename.as_str();
         let mut t_writer = Vec::default();
         let mut writer = Vec::default();
         let mut paths = Vec::default();
 
         let mut extend_writers = |basename| -> Result<()> {
             let output_path =
-                output_basepath
-                    .as_ref()
-                    .join(format!("{}{}", basename, output_mode.extension()));
+                Path::new(output_basepath).join(format!("{}{}", basename, output_mode.extension()));
             let output_handle = match_output(Some(output_path.clone()))?;
 
             let gw = builder.clone().build(output_handle)?;

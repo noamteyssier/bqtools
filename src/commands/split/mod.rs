@@ -15,27 +15,17 @@ use crate::{
     },
 };
 
-/// The three pattern sets a split operates over: primary-only, secondary-only,
-/// and either-sequence patterns.
-struct AllPatterns {
-    pat1: PatternCollection,
-    pat2: PatternCollection,
-    pat: PatternCollection,
-}
-impl AllPatterns {
-    pub fn are_fixed(&self) -> bool {
-        all_patterns_fixed(&[&self.pat1, &self.pat2, &self.pat])
-    }
-}
-
-fn load_patterns(args: &SplitCommand) -> Result<AllPatterns> {
+/// Loads the primary-only, secondary-only and either-sequence pattern sets.
+fn load_patterns(
+    args: &SplitCommand,
+) -> Result<(PatternCollection, PatternCollection, PatternCollection)> {
     let (mut pat1, mut pat2, mut pat) = args.patterns.load_all_patterns()?;
     if args.split.rc {
         pat1.reverse_complement()?;
         pat2.reverse_complement()?;
         pat.reverse_complement()?;
     }
-    Ok(AllPatterns { pat1, pat2, pat })
+    Ok((pat1, pat2, pat))
 }
 
 /// Selects and builds the splitter backend.
@@ -44,7 +34,7 @@ fn load_patterns(args: &SplitCommand) -> Result<AllPatterns> {
 /// fixed-string pattern sets use the Aho-Corasick backend (auto-detected, or
 /// forced with `-x/--fixed`); anything else falls back to the regex backend.
 fn build_splitter(args: &SplitCommand) -> Result<Splitter> {
-    let patterns = load_patterns(args)?;
+    let (pat1, pat2, pat) = load_patterns(args)?;
 
     #[cfg(feature = "fuzzy")]
     if args.fuzzy_args.fuzzy {
@@ -54,9 +44,9 @@ fn build_splitter(args: &SplitCommand) -> Result<Splitter> {
             args.fuzzy_args.inexact,
         );
         let splitter = FuzzySplitter::new(
-            &patterns.pat1,
-            &patterns.pat2,
-            &patterns.pat,
+            &pat1,
+            &pat2,
+            &pat,
             args.fuzzy_args.distance,
             args.fuzzy_args.inexact,
             args.fuzzy_args.max_n_frac,
@@ -64,7 +54,7 @@ fn build_splitter(args: &SplitCommand) -> Result<Splitter> {
         return Ok(Splitter::Fuzzy(Box::new(splitter)));
     }
 
-    let use_fixed = args.split.fixed || patterns.are_fixed();
+    let use_fixed = args.split.fixed || all_patterns_fixed(&[&pat1, &pat2, &pat]);
     if !args.split.fixed && use_fixed {
         log::debug!("All patterns are fixed strings — auto-selecting Aho-Corasick");
     }
@@ -74,16 +64,11 @@ fn build_splitter(args: &SplitCommand) -> Result<Splitter> {
             "Using Aho-Corasick splitter backend (dfa={})",
             !args.split.no_dfa,
         );
-        let splitter = AhoCorasickSplitter::new(
-            &patterns.pat1,
-            &patterns.pat2,
-            &patterns.pat,
-            args.split.no_dfa,
-        )?;
+        let splitter = AhoCorasickSplitter::new(&pat1, &pat2, &pat, args.split.no_dfa)?;
         Ok(Splitter::AhoCorasick(splitter))
     } else {
         log::trace!("Using regex splitter backend");
-        let splitter = RegexSplitter::new(&patterns.pat1, &patterns.pat2, &patterns.pat)?;
+        let splitter = RegexSplitter::new(&pat1, &pat2, &pat)?;
         Ok(Splitter::Regex(splitter))
     }
 }
@@ -93,14 +78,7 @@ pub fn run(args: &SplitCommand) -> Result<()> {
     let reader = BinseqReader::new(args.input.path())?;
     let builder = builder_from_reader(&reader);
     std::fs::create_dir_all(&args.split.basepath)?;
-    let mut proc = SplitProcessor::new(
-        splitter,
-        &builder,
-        &args.split.basepath,
-        args.input.mode()?,
-        !args.split.skip_unmatched,
-        &args.split.unmatched_basename,
-    )?;
+    let mut proc = SplitProcessor::new(splitter, &builder, args)?;
     if let Some(span) = args.input.span {
         let num_records = reader.num_records()?;
         reader.process_parallel_range(
