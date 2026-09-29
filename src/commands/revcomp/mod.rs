@@ -1,7 +1,7 @@
 mod processor;
 
 use anyhow::Result;
-use binseq::{BinseqReader, ParallelReader};
+use binseq::BinseqReader;
 use log::{info, warn};
 
 use crate::{
@@ -24,16 +24,12 @@ pub fn run(args: &RevcompCommand) -> Result<()> {
     let writer = builder.build(ohandle)?;
     let mut processor = RevCompProcessor::new(writer, mate)?;
 
-    if let Some(span) = args.input.span {
-        let num_records = reader.num_records()?;
-        reader.process_parallel_range(
-            processor.clone(),
-            args.output.threads(),
-            span.get_range(num_records)?,
-        )?;
-    } else {
-        reader.process_parallel(processor.clone(), args.output.threads())?;
-    }
+    let num_records = reader.num_records()?;
+    let range = match args.input.span {
+        Some(span) => span.get_range(num_records)?,
+        None => 0..num_records,
+    };
+    reader.process_parallel_range(processor.clone(), args.output.threads(), range)?;
     processor.finish()?;
 
     info!(
