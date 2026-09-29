@@ -70,40 +70,6 @@ pub fn compress_passthrough(
     }
 }
 
-/// Default `max_n_frac` for fuzzy (sassy) matching: `k / pattern_length`.
-///
-/// Mirrors sassy's semantics for the fraction of `N` bases tolerated within a
-/// match. Falls back to `1.0` (no restriction) when there is no pattern to
-/// measure a length from.
-#[cfg(feature = "fuzzy")]
-pub fn default_max_n_frac(k: usize, pattern_len: usize) -> f32 {
-    if pattern_len == 0 {
-        1.0
-    } else {
-        (k as f32 / pattern_len as f32).min(1.0)
-    }
-}
-
-/// Validates that every pattern in a fuzzy pattern set has the same length.
-///
-/// `sassy::Searcher::encode_patterns` requires uniform pattern lengths within a
-/// single batch and otherwise panics via an internal `assert!`. Calling this
-/// first turns that panic into a catchable error before patterns ever reach sassy.
-#[cfg(feature = "fuzzy")]
-pub fn validate_uniform_pattern_length(patterns: &[Vec<u8>]) -> Result<()> {
-    let Some(expected) = patterns.first().map(Vec::len) else {
-        return Ok(());
-    };
-    if let Some(bad) = patterns.iter().find(|p| p.len() != expected) {
-        log::error!("Multiple pattern lengths provided - currently cannot handle variable-length patterns in fuzzy matching");
-        bail!(
-            "Pattern length mismatch: expected length {expected}, found length {}",
-            bad.len()
-        );
-    }
-    Ok(())
-}
-
 /// Builds a fuzzy (sassy) searcher for one pattern set: validates uniform
 /// pattern length, resolves the `max_n_frac` filter (defaulting to
 /// `k / pattern_length` when unset), and encodes the patterns into the
@@ -114,9 +80,23 @@ pub fn build_fuzzy_searcher(
     k: usize,
     max_n_frac: Option<f32>,
 ) -> Result<(Searcher<Iupac>, Option<EncodedPatterns<Iupac>>)> {
-    validate_uniform_pattern_length(patterns)?;
-    let frac =
-        max_n_frac.unwrap_or_else(|| default_max_n_frac(k, patterns.first().map_or(0, Vec::len)));
+    // sassy panics on mixed pattern lengths, so reject them up front
+    let pattern_len = patterns.first().map_or(0, Vec::len);
+    if let Some(bad) = patterns.iter().find(|p| p.len() != pattern_len) {
+        log::error!("Multiple pattern lengths provided - currently cannot handle variable-length patterns in fuzzy matching");
+        bail!(
+            "Pattern length mismatch: expected length {pattern_len}, found length {}",
+            bad.len()
+        );
+    }
+    // default: k / pattern_length, or 1.0 (no restriction) without patterns
+    let frac = max_n_frac.unwrap_or_else(|| {
+        if pattern_len == 0 {
+            1.0
+        } else {
+            (k as f32 / pattern_len as f32).min(1.0)
+        }
+    });
     let mut searcher = Searcher::new_fwd().with_max_n_frac(frac);
     let encoded = (!patterns.is_empty()).then(|| searcher.encode_patterns(patterns));
     Ok((searcher, encoded))
