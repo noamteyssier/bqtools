@@ -1,7 +1,7 @@
 mod splitter;
 
 use anyhow::Result;
-use binseq::{BinseqReader, ParallelReader};
+use binseq::BinseqReader;
 
 use splitter::{SplitProcessor, Splitter};
 
@@ -65,16 +65,8 @@ pub fn run(args: &SplitCommand) -> Result<()> {
     let builder = builder_from_reader(&reader);
     std::fs::create_dir_all(&args.split.basepath)?;
     let mut proc = SplitProcessor::new(splitter, &builder, args)?;
-    if let Some(span) = args.input.span {
-        let num_records = reader.num_records()?;
-        reader.process_parallel_range(
-            proc.clone(),
-            args.split.threads,
-            span.get_range(num_records)?,
-        )?;
-    } else {
-        reader.process_parallel(proc.clone(), args.split.threads)?;
-    }
+    let range = args.input.range(reader.num_records()?)?;
+    reader.process_parallel_range(proc.clone(), args.split.threads, range)?;
     proc.finish()?;
     if !args.split.quiet {
         proc.pprint_counts()?;

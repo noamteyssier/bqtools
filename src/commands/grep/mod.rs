@@ -76,16 +76,8 @@ fn run_pattern_count(args: &GrepCommand, reader: BinseqReader) -> Result<()> {
         args.grep.range.unwrap_or_default(),
         args.grep.header,
     );
-    if let Some(span) = args.input.span {
-        let num_records = reader.num_records()?;
-        reader.process_parallel_range(
-            proc.clone(),
-            args.output.threads(),
-            span.get_range(num_records)?,
-        )?;
-    } else {
-        reader.process_parallel(proc.clone(), args.output.threads())?;
-    }
+    let range = args.input.range(reader.num_records()?)?;
+    reader.process_parallel_range(proc.clone(), args.output.threads(), range)?;
     proc.pprint_pattern_counts()?;
     Ok(())
 }
@@ -115,16 +107,8 @@ fn run_grep(
         args.should_color(),
     );
 
-    if let Some(span) = args.input.span {
-        let num_records = reader.num_records()?;
-        reader.process_parallel_range(
-            proc.clone(),
-            args.output.threads(),
-            span.get_range(num_records)?,
-        )?;
-    } else {
-        reader.process_parallel(proc.clone(), args.output.threads())?;
-    }
+    let range = args.input.range(reader.num_records()?)?;
+    reader.process_parallel_range(proc.clone(), args.output.threads(), range)?;
     if count {
         proc.pprint_counts();
     }

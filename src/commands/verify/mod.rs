@@ -1,7 +1,7 @@
 mod processor;
 
 use anyhow::{bail, Result};
-use binseq::{BinseqReader, ParallelReader};
+use binseq::BinseqReader;
 use clap::ValueEnum;
 use log::warn;
 use serde::Serialize;
@@ -86,16 +86,8 @@ fn compute(args: &VerifyCommand) -> Result<VerifyReport> {
 
     let processor = VerifyProcessor::new(fields, args.opts.mate);
 
-    if let Some(span) = args.input.span {
-        let num_records = reader.num_records()?;
-        reader.process_parallel_range(
-            processor.clone(),
-            args.opts.threads,
-            span.get_range(num_records)?,
-        )?;
-    } else {
-        reader.process_parallel(processor.clone(), args.opts.threads)?;
-    }
+    let range = args.input.range(reader.num_records()?)?;
+    reader.process_parallel_range(processor.clone(), args.opts.threads, range)?;
 
     Ok(VerifyReport {
         path: args.input.path().to_string(),

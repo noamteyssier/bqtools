@@ -1,5 +1,5 @@
 use anyhow::Result;
-use binseq::{BinseqReader, ParallelReader};
+use binseq::BinseqReader;
 use log::trace;
 
 use crate::cli::QcCommand;
@@ -22,28 +22,18 @@ pub fn run(args: &QcCommand) -> Result<()> {
     let reader = BinseqReader::new(args.input.path())?;
     let paired = reader.is_paired();
     let total_records = reader.num_records()?;
-    let range = args
-        .input
-        .span
-        .map(|span| span.get_range(total_records))
-        .transpose()?;
-    let processed_records = range.as_ref().map_or(total_records, |r| r.end - r.start);
+    let range = args.input.range(total_records)?;
 
     let mut proc = proc::QcProcessor::new(
         &args.qc,
-        range.as_ref().map_or(0, |r| r.start),
+        range.start,
         args.input.path().to_string(),
-        processed_records,
+        range.len(),
         paired,
     )?;
 
-    if let Some(range) = range {
-        trace!("Processing span: {}..{}", range.start, range.end);
-        reader.process_parallel_range(proc.clone(), args.qc.threads, range)?;
-    } else {
-        trace!("Processing all records: n={total_records}");
-        reader.process_parallel(proc.clone(), args.qc.threads)?;
-    }
+    trace!("Processing span: {}..{}", range.start, range.end);
+    reader.process_parallel_range(proc.clone(), args.qc.threads, range)?;
     proc.finish()?;
 
     Ok(())

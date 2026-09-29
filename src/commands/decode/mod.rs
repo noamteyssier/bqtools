@@ -50,10 +50,7 @@ pub fn run_with(
         Mate::One
     };
     let proc = Decoder::new(writer, format, mate, sample);
-    let range = match input.span {
-        Some(span) => span.get_range(reader.num_records()?)?,
-        None => 0..reader.num_records()?,
-    };
+    let range = input.range(reader.num_records()?)?;
     reader.process_parallel_range(proc.clone(), output.threads(), range)?;
     Ok(proc)
 }
