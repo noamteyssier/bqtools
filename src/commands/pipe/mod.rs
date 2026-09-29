@@ -37,7 +37,8 @@ pub fn run(args: &PipeCommand) -> Result<()> {
         bail!("--span is not supported by the pipe subcommand");
     }
 
-    let format = args.format();
+    let opts = &args.pipe;
+    let format = opts.format;
     let reader = BinseqReader::new(args.input.path())?;
     let num_records = reader.num_records()?;
     let paired = reader.is_paired();
@@ -49,7 +50,7 @@ pub fn run(args: &PipeCommand) -> Result<()> {
 
     // Validate exec templates before creating FIFOs so a bad template fails fast
     // rather than leaving an open FIFO with no reader (which would hang).
-    let tmpl = args.exec().or(args.exec_batch());
+    let tmpl = opts.exec.as_deref().or(opts.exec_batch.as_deref());
     if let Some(t) = tmpl {
         exec::validate_template(t, paired)?;
     }
@@ -64,13 +65,13 @@ pub fn run(args: &PipeCommand) -> Result<()> {
         PairedChannels::Both
     };
 
-    let basename = args.basepath();
+    let basename = opts.basepath.as_str();
     // Wrap the FIFOs in a guard immediately so they are unlinked on any early
     // return or panic below, not just on the happy path.
-    let fifo_guard = FifoGuard::new(create_fifos(basename, paired, num_pipes, format, channels)?);
+    let fifo_guard = FifoGuard(create_fifos(basename, paired, num_pipes, format, channels)?);
     info!(
         "{} FIFOs created. Waiting for readers to connect...",
-        fifo_guard.paths().len()
+        fifo_guard.0.len()
     );
 
     let records_per_pipe = num_records / num_pipes;
@@ -78,14 +79,9 @@ pub fn run(args: &PipeCommand) -> Result<()> {
     // Spawn consumer processes before writer threads: opening a FIFO for writing
     // blocks until a reader connects, so readers must be in-flight first.
     let mut consumers = match tmpl {
-        Some(t) => exec::spawn_consumers(
-            t,
-            args.exec().is_none(),
-            basename,
-            paired,
-            num_pipes,
-            format,
-        )?,
+        Some(t) => {
+            exec::spawn_consumers(t, opts.exec.is_none(), basename, paired, num_pipes, format)?
+        }
         None => Vec::new(),
     };
 
