@@ -8,8 +8,9 @@ use log::{trace, warn};
 use nix::sys::stat;
 use nix::unistd;
 
-use super::{BoxedWriter, PairedChannels, RecordPair};
+use super::{PairedChannels, RecordPair};
 use crate::cli::FileFormat;
+use crate::types::BoxedWriter;
 
 /// Creates many FIFOs (named-pipes) at the given basepath.
 ///

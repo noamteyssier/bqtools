@@ -2,7 +2,6 @@ pub mod exec;
 pub mod processor;
 pub mod utils;
 
-use std::io::Write;
 use std::thread;
 
 use anyhow::{bail, Result};
@@ -13,8 +12,6 @@ use crate::cli::{FileFormat, PipeCommand};
 use exec::ExecMode;
 use processor::PipeProcessor;
 use utils::{create_fifos, FifoGuard};
-
-pub type BoxedWriter = Box<dyn Write + Send>;
 
 /// Simple enum to represent the type of record pair to process.
 #[derive(Clone, Copy, Debug)]

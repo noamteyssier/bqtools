@@ -4,13 +4,14 @@ use anyhow::Result;
 use binseq::ParallelProcessor;
 use std::sync::Mutex;
 
-use super::{BoxedWriter, RecordPair};
+use super::RecordPair;
 use crate::{
     cli::FileFormat,
     commands::{
         decode::write_record,
         pipe::utils::{name_fifo, open_fifo},
     },
+    types::BoxedWriter,
 };
 
 type SharedWriter = Arc<Mutex<BoxedWriter>>;
