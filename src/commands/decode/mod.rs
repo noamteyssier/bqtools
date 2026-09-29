@@ -82,13 +82,17 @@ mod tests {
         crate::commands::encode::run(&cmd)
     }
 
-    fn decode(bq_path: &std::path::Path, out_path: &std::path::Path) -> Result<()> {
-        let cmd = crate::cli::DecodeCommand::try_parse_from([
-            "decode",
-            bq_path.to_str().unwrap(),
-            "-o",
-            out_path.to_str().unwrap(),
-        ])?;
+    fn decode(bq_path: &std::path::Path, out_path: &std::path::Path, extra: &[&str]) -> Result<()> {
+        let cmd = crate::cli::DecodeCommand::try_parse_from(
+            [
+                "decode",
+                bq_path.to_str().unwrap(),
+                "-o",
+                out_path.to_str().unwrap(),
+            ]
+            .into_iter()
+            .chain(extra.iter().copied()),
+        )?;
         super::run(&cmd)
     }
 
@@ -105,7 +109,7 @@ mod tests {
             encode(in_tmp.path(), bq_tmp.path())?;
 
             let out_tmp = NamedTempFile::with_suffix(fmt.fastx_suffix())?;
-            decode(bq_tmp.path(), out_tmp.path())?;
+            decode(bq_tmp.path(), out_tmp.path(), &[])?;
 
             let count = count_fastx_records(out_tmp.path())?;
             assert_eq!(
@@ -124,15 +128,7 @@ mod tests {
 
         for threads in ["1", "2", "4"] {
             let out_tmp = NamedTempFile::with_suffix(".fastq")?;
-            let cmd = crate::cli::DecodeCommand::try_parse_from([
-                "decode",
-                bq_tmp.path().to_str().unwrap(),
-                "-o",
-                out_tmp.path().to_str().unwrap(),
-                "-T",
-                threads,
-            ])?;
-            super::run(&cmd)?;
+            decode(bq_tmp.path(), out_tmp.path(), &["-T", threads])?;
             assert_eq!(count_fastx_records(out_tmp.path())?, 1000);
         }
         Ok(())
@@ -146,15 +142,7 @@ mod tests {
 
         for (fmt_flag, out_suffix) in [("a", ".fasta"), ("q", ".fastq")] {
             let out_tmp = NamedTempFile::with_suffix(out_suffix)?;
-            let cmd = crate::cli::DecodeCommand::try_parse_from([
-                "decode",
-                bq_tmp.path().to_str().unwrap(),
-                "-o",
-                out_tmp.path().to_str().unwrap(),
-                "-f",
-                fmt_flag,
-            ])?;
-            super::run(&cmd)?;
+            decode(bq_tmp.path(), out_tmp.path(), &["-f", fmt_flag])?;
             assert_eq!(count_fastx_records(out_tmp.path())?, DEFAULT_NUM_RECORDS);
         }
         Ok(())
@@ -212,15 +200,7 @@ mod tests {
         // mate=1 or mate=2: one mate per pair → N records
         for mate in ["1", "2"] {
             let out_tmp = NamedTempFile::with_suffix(".fastq")?;
-            let cmd = crate::cli::DecodeCommand::try_parse_from([
-                "decode",
-                bq_tmp.path().to_str().unwrap(),
-                "-o",
-                out_tmp.path().to_str().unwrap(),
-                "-m",
-                mate,
-            ])?;
-            super::run(&cmd)?;
+            decode(bq_tmp.path(), out_tmp.path(), &["-m", mate])?;
             assert_eq!(
                 count_fastx_records(out_tmp.path())?,
                 DEFAULT_NUM_RECORDS,
@@ -231,15 +211,7 @@ mod tests {
         // mate=both: R1 and R2 interleaved into a single file → 2×N records
         {
             let out_tmp = NamedTempFile::with_suffix(".fastq")?;
-            let cmd = crate::cli::DecodeCommand::try_parse_from([
-                "decode",
-                bq_tmp.path().to_str().unwrap(),
-                "-o",
-                out_tmp.path().to_str().unwrap(),
-                "-m",
-                "both",
-            ])?;
-            super::run(&cmd)?;
+            decode(bq_tmp.path(), out_tmp.path(), &["-m", "both"])?;
             assert_eq!(
                 count_fastx_records(out_tmp.path())?,
                 2 * DEFAULT_NUM_RECORDS,
@@ -265,15 +237,7 @@ mod tests {
 
             // First 50 records
             let out_tmp = NamedTempFile::with_suffix(".fastq")?;
-            let cmd = crate::cli::DecodeCommand::try_parse_from([
-                "decode",
-                bq_tmp.path().to_str().unwrap(),
-                "-o",
-                out_tmp.path().to_str().unwrap(),
-                "--span",
-                "0..50",
-            ])?;
-            super::run(&cmd)?;
+            decode(bq_tmp.path(), out_tmp.path(), &["--span", "0..50"])?;
             assert_eq!(
                 count_fastx_records(out_tmp.path())?,
                 50,
@@ -282,15 +246,7 @@ mod tests {
 
             // Records from 50 to end
             let out_tmp = NamedTempFile::with_suffix(".fastq")?;
-            let cmd = crate::cli::DecodeCommand::try_parse_from([
-                "decode",
-                bq_tmp.path().to_str().unwrap(),
-                "-o",
-                out_tmp.path().to_str().unwrap(),
-                "--span",
-                "50..",
-            ])?;
-            super::run(&cmd)?;
+            decode(bq_tmp.path(), out_tmp.path(), &["--span", "50.."])?;
             assert_eq!(
                 count_fastx_records(out_tmp.path())?,
                 nrec - 50,
