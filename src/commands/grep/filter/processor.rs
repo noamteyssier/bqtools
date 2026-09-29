@@ -6,8 +6,10 @@ use crate::{
     },
 };
 use binseq::prelude::*;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+};
 
 use super::{MatchRanges, PatternMatch};
 
@@ -62,8 +64,8 @@ pub struct FilterProcessor<Pm: PatternMatch> {
 
     /// Global values
     global_writer: Arc<Mutex<SplitWriter>>,
-    global_count: Arc<Mutex<usize>>,
-    global_total: Arc<Mutex<usize>>,
+    global_count: Arc<AtomicUsize>,
+    global_total: Arc<AtomicUsize>,
 }
 impl<Pm: PatternMatch> FilterProcessor<Pm> {
     #[allow(clippy::fn_params_excessive_bools)]
@@ -104,8 +106,8 @@ impl<Pm: PatternMatch> FilterProcessor<Pm> {
             global_writer: Arc::new(Mutex::new(writer)),
             local_count: 0,
             local_total: 0,
-            global_count: Arc::new(Mutex::new(0)),
-            global_total: Arc::new(Mutex::new(0)),
+            global_count: Arc::new(AtomicUsize::new(0)),
+            global_total: Arc::new(AtomicUsize::new(0)),
         }
     }
     pub fn clear_matches(&mut self) {
@@ -148,9 +150,9 @@ impl<Pm: PatternMatch> FilterProcessor<Pm> {
         }
     }
     pub fn pprint_counts(&self) {
-        let count = *self.global_count.lock().unwrap();
+        let count = self.global_count.load(Ordering::Relaxed);
         if self.frac {
-            let total = *self.global_total.lock().unwrap();
+            let total = self.global_total.load(Ordering::Relaxed);
             let frac = if total > 0 {
                 count as f64 / total as f64
             } else {
@@ -244,12 +246,12 @@ impl<Pm: PatternMatch> ParallelProcessor for FilterProcessor<Pm> {
         self.right.clear();
 
         // Increment the global count and reset local
-        *self.global_count.lock().unwrap() += self.local_count;
-        self.local_count = 0;
+        self.global_count
+            .fetch_add(std::mem::take(&mut self.local_count), Ordering::Relaxed);
 
         // Increment the global total and reset local
-        *self.global_total.lock().unwrap() += self.local_total;
-        self.local_total = 0;
+        self.global_total
+            .fetch_add(std::mem::take(&mut self.local_total), Ordering::Relaxed);
 
         Ok(())
     }
