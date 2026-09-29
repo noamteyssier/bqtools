@@ -5,7 +5,7 @@ use binseq::BinseqRecord;
 use serde::Serialize;
 use std::sync::Mutex;
 
-use super::report::table;
+use super::report::{add_assign, pct, table, write_tsv};
 use crate::commands::{match_output, qc::modules::QcModule};
 
 const BASE_CONTENT_PRIMARY_PATH: &str = "base_content_R1.tsv";
@@ -96,42 +96,21 @@ impl BaseContentHistogram {
         if self.len() < other.len() {
             self.inner.resize(other.len(), DEFAULT_BASE_ABUNDANCE);
         }
-        self.inner
-            .iter_mut()
-            .zip(other.inner.iter_mut())
-            .for_each(|(self_pos, other_pos)| {
-                self_pos
-                    .iter_mut()
-                    .zip(other_pos.iter_mut())
-                    .for_each(|(self_c, other_c)| {
-                        *self_c += *other_c;
-                        *other_c = 0;
-                    });
-            });
+        for (dst, src) in self.inner.iter_mut().zip(&mut other.inner) {
+            add_assign(dst, src);
+        }
     }
     fn serialize_to<W: Write>(&self, wtr: &mut W) -> Result<()> {
         if self.is_empty() {
             return Ok(());
         }
 
-        let mut ser = csv::WriterBuilder::default()
-            .delimiter(b'\t')
-            .has_headers(true)
-            .from_writer(wtr);
-
-        self.inner
-            .iter()
-            .enumerate()
-            .try_for_each(|(pos, counts)| -> Result<()> {
-                let total = counts.iter().sum::<usize>() as f64;
-                let pct = |c: usize| {
-                    if total > 0.0 {
-                        (c as f64 / total) * 100.0
-                    } else {
-                        0.0
-                    }
-                };
-                ser.serialize(&BaseContentRecord {
+        write_tsv(
+            wtr,
+            self.inner.iter().enumerate().map(|(pos, counts)| {
+                let total: usize = counts.iter().sum();
+                let pct = |c: usize| pct(c, total);
+                BaseContentRecord {
                     pos,
                     a: counts[IDX_A],
                     c: counts[IDX_C],
@@ -143,11 +122,9 @@ impl BaseContentHistogram {
                     pct_g: pct(counts[IDX_G]),
                     pct_t: pct(counts[IDX_T]),
                     pct_n: pct(counts[IDX_N]),
-                })
-                .map_err(Into::into)
-            })?;
-
-        ser.flush().map_err(Into::into)
+                }
+            }),
+        )
     }
 
     /// Aggregate base composition across all positions.
@@ -168,13 +145,6 @@ impl BaseContentHistogram {
 
         let totals = self.totals();
         let total: usize = totals.iter().sum();
-        let pct = |c: usize| {
-            if total == 0 {
-                0.0
-            } else {
-                (c as f64 / total as f64) * 100.0
-            }
-        };
 
         Some(table(
             &["Base", "Count", "Pct"],
@@ -182,27 +152,27 @@ impl BaseContentHistogram {
                 vec![
                     "A".into(),
                     totals[IDX_A].to_string(),
-                    format!("{:.2}%", pct(totals[IDX_A])),
+                    format!("{:.2}%", pct(totals[IDX_A], total)),
                 ],
                 vec![
                     "C".into(),
                     totals[IDX_C].to_string(),
-                    format!("{:.2}%", pct(totals[IDX_C])),
+                    format!("{:.2}%", pct(totals[IDX_C], total)),
                 ],
                 vec![
                     "G".into(),
                     totals[IDX_G].to_string(),
-                    format!("{:.2}%", pct(totals[IDX_G])),
+                    format!("{:.2}%", pct(totals[IDX_G], total)),
                 ],
                 vec![
                     "T".into(),
                     totals[IDX_T].to_string(),
-                    format!("{:.2}%", pct(totals[IDX_T])),
+                    format!("{:.2}%", pct(totals[IDX_T], total)),
                 ],
                 vec![
                     "N".into(),
                     totals[IDX_N].to_string(),
-                    format!("{:.2}%", pct(totals[IDX_N])),
+                    format!("{:.2}%", pct(totals[IDX_N], total)),
                 ],
             ],
         ))

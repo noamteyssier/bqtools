@@ -5,7 +5,10 @@ use binseq::BinseqRecord;
 use serde::Serialize;
 use std::sync::Mutex;
 
-use super::{report::table, QualAbundance, DEFAULT_QUAL_ABUNDANCE, PHRED_OFFSET};
+use super::{
+    report::{add_assign, stats, table, write_tsv},
+    QualAbundance, DEFAULT_QUAL_ABUNDANCE, PHRED_OFFSET,
+};
 use crate::commands::{match_output, qc::modules::QcModule};
 
 const BASE_QUALITY_PRIMARY_PATH: &str = "base_quality_R1.tsv";
@@ -52,61 +55,30 @@ impl BaseHistogram {
         if self.len() < other.len() {
             self.inner.resize(other.len(), DEFAULT_QUAL_ABUNDANCE);
         }
-        self.inner
-            .iter_mut()
-            .zip(other.inner.iter_mut())
-            .for_each(|(self_pos, other_pos)| {
-                self_pos
-                    .iter_mut()
-                    .zip(other_pos.iter_mut())
-                    .for_each(|(self_q, other_q)| {
-                        *self_q += *other_q;
-                        *other_q = 0;
-                    });
-            });
+        for (dst, src) in self.inner.iter_mut().zip(&mut other.inner) {
+            add_assign(dst, src);
+        }
     }
     fn serialize_to<W: Write>(&self, wtr: &mut W) -> Result<()> {
         if self.is_empty() {
             return Ok(());
         }
 
-        let mut ser = csv::WriterBuilder::default()
-            .delimiter(b'\t')
-            .has_headers(true)
-            .from_writer(wtr);
-
-        self.inner
-            .iter()
-            .enumerate()
-            .try_for_each(|(pos, inner)| -> Result<()> {
+        write_tsv(
+            wtr,
+            self.inner.iter().enumerate().flat_map(|(pos, inner)| {
                 inner
                     .iter()
                     .enumerate()
-                    .filter(|(_, count)| **count > 0)
-                    .map(|(qual, count)| (qual, *count))
-                    .try_for_each(|(qual, count)| -> Result<()> {
-                        ser.serialize(&BaseQualityRecord { pos, qual, count })
-                            .map_err(Into::into)
-                    })
-            })?;
-
-        ser.flush().map_err(Into::into)
+                    .filter(|(_, &count)| count > 0)
+                    .map(move |(qual, &count)| BaseQualityRecord { pos, qual, count })
+            }),
+        )
     }
 
     /// Mean quality score at each position.
     fn position_means(&self) -> Vec<f64> {
-        self.inner
-            .iter()
-            .map(|counts| {
-                let total: usize = counts.iter().sum();
-                if total == 0 {
-                    0.0
-                } else {
-                    let sum: usize = counts.iter().enumerate().map(|(q, &c)| q * c).sum();
-                    sum as f64 / total as f64
-                }
-            })
-            .collect()
+        self.inner.iter().map(|counts| stats(counts).1).collect()
     }
 
     fn summary_table(&self) -> Option<String> {

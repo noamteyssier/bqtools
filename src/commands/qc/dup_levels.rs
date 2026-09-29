@@ -7,7 +7,7 @@ use log::trace;
 use serde::Serialize;
 use std::sync::Mutex;
 
-use super::report::{dual_section, table};
+use super::report::{dual_section, pct, table, write_tsv};
 use crate::{
     cli::QcOptions,
     commands::{match_output, qc::modules::QcModule},
@@ -26,14 +26,6 @@ const LEVELS: &[usize] = &[
 const LABELS: &[&str] = &[
     "1", "2", "3", "4", "5", "6", "7", "8", "9", ">10", ">50", ">100", ">500", ">1k", ">5k", ">10k",
 ];
-
-fn pct(n: usize, total: usize) -> f64 {
-    if total == 0 {
-        0.0
-    } else {
-        (n as f64 / total as f64) * 100.0
-    }
-}
 
 /// Max number of overrepresented sequences shown in the summary report (the
 /// full list still goes to the TSV).
@@ -137,26 +129,19 @@ impl DuplicationCounter {
             total_buckets[idx] += count;
         }
 
-        let mut ser = csv::WriterBuilder::default()
-            .delimiter(b'\t')
-            .has_headers(true)
-            .from_writer(wtr);
-
-        LABELS
-            .iter()
-            .enumerate()
-            .try_for_each(|(idx, &level)| -> Result<()> {
-                ser.serialize(&DuplicationRecord {
+        write_tsv(
+            wtr,
+            LABELS
+                .iter()
+                .enumerate()
+                .map(|(idx, &level)| DuplicationRecord {
                     level,
                     distinct_count: distinct_buckets[idx],
                     distinct_pct: pct(distinct_buckets[idx], total_distinct),
                     total_count: total_buckets[idx],
                     total_pct: pct(total_buckets[idx], total_reads),
-                })
-                .map_err(Into::into)
-            })?;
-
-        ser.flush().map_err(Into::into)
+                }),
+        )
     }
 
     /// Sequences at or above `threshold_pct` of the sample, most frequent
@@ -188,23 +173,16 @@ impl DuplicationCounter {
         wtr: &mut W,
         threshold_pct: f64,
     ) -> Result<()> {
-        let mut ser = csv::WriterBuilder::default()
-            .delimiter(b'\t')
-            .has_headers(true)
-            .from_writer(wtr);
-
-        self.overrepresented(threshold_pct)
-            .into_iter()
-            .try_for_each(|(seq, count, pct)| -> Result<()> {
-                ser.serialize(&OverrepresentedRecord {
+        write_tsv(
+            wtr,
+            self.overrepresented(threshold_pct)
+                .into_iter()
+                .map(|(seq, count, pct)| OverrepresentedRecord {
                     sequence: String::from_utf8_lossy(seq).into_owned(),
                     count,
                     pct,
-                })
-                .map_err(Into::into)
-            })?;
-
-        ser.flush().map_err(Into::into)
+                }),
+        )
     }
 
     fn total_reads(&self) -> usize {

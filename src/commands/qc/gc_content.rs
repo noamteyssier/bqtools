@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::sync::Mutex;
 use std::{io::Write, path::Path, sync::Arc};
 
-use super::report::table;
+use super::report::{add_assign, stats, table, write_tsv};
 use crate::commands::{match_output, qc::modules::QcModule};
 
 const GC_CONTENT_PRIMARY_PATH: &str = "gc_content_R1.tsv";
@@ -54,13 +54,7 @@ impl GcHistogram {
     }
 
     fn ingest(&mut self, other: &mut Self) {
-        self.inner
-            .iter_mut()
-            .zip(other.inner.iter_mut())
-            .for_each(|(u, v)| {
-                *u += *v;
-                *v = 0;
-            });
+        add_assign(&mut self.inner, &mut other.inner);
     }
 
     fn serialize_to<W: Write>(&self, wtr: &mut W) -> Result<()> {
@@ -68,72 +62,27 @@ impl GcHistogram {
             return Ok(());
         }
 
-        let mut ser = csv::WriterBuilder::default()
-            .delimiter(b'\t')
-            .has_headers(true)
-            .from_writer(wtr);
-
-        self.inner
-            .iter()
-            .copied()
-            .enumerate()
-            .try_for_each(|(pct_gc, count)| -> Result<()> {
-                ser.serialize(&GcContentRecord { pct_gc, count })
-                    .map_err(Into::into)
-            })?;
-
-        ser.flush().map_err(Into::into)
-    }
-
-    fn total(&self) -> usize {
-        self.inner.iter().sum()
-    }
-
-    fn mean(&self) -> f64 {
-        let total = self.total();
-        if total == 0 {
-            0.0
-        } else {
-            let sum: usize = self.inner.iter().enumerate().map(|(pct, &c)| pct * c).sum();
-            sum as f64 / total as f64
-        }
-    }
-
-    fn median(&self) -> usize {
-        let total = self.total();
-        if total == 0 {
-            return 0;
-        }
-        let half = total / 2;
-        let mut cum = 0;
-        for (pct, &c) in self.inner.iter().enumerate() {
-            cum += c;
-            if cum > half {
-                return pct;
-            }
-        }
-        0
-    }
-
-    fn mode(&self) -> usize {
-        self.inner
-            .iter()
-            .enumerate()
-            .max_by_key(|&(_, &c)| c)
-            .map_or(0, |(pct, _)| pct)
+        write_tsv(
+            wtr,
+            self.inner
+                .iter()
+                .enumerate()
+                .map(|(pct_gc, &count)| GcContentRecord { pct_gc, count }),
+        )
     }
 
     fn summary_table(&self) -> Option<String> {
         if self.is_empty() {
             return None;
         }
+        let (total, mean, median, mode) = stats(&self.inner);
         Some(table(
             &["Metric", "Value"],
             &[
-                vec!["Reads".into(), self.total().to_string()],
-                vec!["Mean GC%".into(), format!("{:.2}%", self.mean())],
-                vec!["Median GC%".into(), format!("{}%", self.median())],
-                vec!["Mode GC%".into(), format!("{}%", self.mode())],
+                vec!["Reads".into(), total.to_string()],
+                vec!["Mean GC%".into(), format!("{mean:.2}%")],
+                vec!["Median GC%".into(), format!("{median}%")],
+                vec!["Mode GC%".into(), format!("{mode}%")],
             ],
         ))
     }
@@ -223,8 +172,8 @@ mod tests {
         let mut hist = GcHistogram::default();
         hist.push(b"GCAT"); // 2/4 = 50% GC
         assert!(!hist.is_empty());
-        assert_eq!(hist.total(), 1);
-        assert_eq!(hist.mean(), 50.0);
+        assert_eq!(stats(&hist.inner).0, 1);
+        assert_eq!(stats(&hist.inner).1, 50.0);
     }
 
     #[test]
@@ -233,10 +182,10 @@ mod tests {
         hist.push(b"AAAA"); // 0% GC
         hist.push(b"AAAA"); // 0% GC
         hist.push(b"GGGG"); // 100% GC
-        assert_eq!(hist.total(), 3);
-        assert!((hist.mean() - 33.333_333_333_333_336).abs() < 1e-9);
-        assert_eq!(hist.median(), 0);
-        assert_eq!(hist.mode(), 0);
+        assert_eq!(stats(&hist.inner).0, 3);
+        assert!((stats(&hist.inner).1 - 33.333_333_333_333_336).abs() < 1e-9);
+        assert_eq!(stats(&hist.inner).2, 0);
+        assert_eq!(stats(&hist.inner).3, 0);
     }
 
     #[test]
@@ -263,8 +212,8 @@ mod tests {
 
         a.ingest(&mut b);
 
-        assert_eq!(a.total(), 2);
-        assert_eq!(a.mean(), 50.0);
+        assert_eq!(stats(&a.inner).0, 2);
+        assert_eq!(stats(&a.inner).1, 50.0);
         assert!(b.is_empty());
     }
 }

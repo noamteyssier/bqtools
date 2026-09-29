@@ -1,3 +1,60 @@
+use std::io::Write;
+
+use anyhow::Result;
+use serde::Serialize;
+
+/// `n` as a percentage of `total` (0 when `total` is 0).
+pub fn pct(n: usize, total: usize) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        (n as f64 / total as f64) * 100.0
+    }
+}
+
+/// Writes `rows` as a tab-separated file with a header row.
+pub fn write_tsv<W: Write, S: Serialize>(wtr: W, rows: impl IntoIterator<Item = S>) -> Result<()> {
+    let mut ser = csv::WriterBuilder::default()
+        .delimiter(b'\t')
+        .from_writer(wtr);
+    for row in rows {
+        ser.serialize(row)?;
+    }
+    ser.flush()?;
+    Ok(())
+}
+
+/// Adds `src` into `dst` element-wise and zeroes `src`.
+pub fn add_assign(dst: &mut [usize], src: &mut [usize]) {
+    for (d, s) in dst.iter_mut().zip(src) {
+        *d += std::mem::take(s);
+    }
+}
+
+/// `(total, mean, median, mode)` of a histogram indexed by value.
+pub fn stats(counts: &[usize]) -> (usize, f64, usize, usize) {
+    let total: usize = counts.iter().sum();
+    if total == 0 {
+        return (0, 0.0, 0, counts.len().saturating_sub(1));
+    }
+    let sum: usize = counts.iter().enumerate().map(|(v, &c)| v * c).sum();
+    let half = total / 2;
+    let mut cum = 0;
+    let median = counts
+        .iter()
+        .position(|&c| {
+            cum += c;
+            cum > half
+        })
+        .unwrap_or(0);
+    let mode = counts
+        .iter()
+        .enumerate()
+        .max_by_key(|&(_, &c)| c)
+        .map_or(0, |(v, _)| v);
+    (total, sum as f64 / total as f64, median, mode)
+}
+
 /// Renders a markdown table. Returns an empty string if `rows` is empty, so
 /// callers can unconditionally splice the result into a report without an
 /// extra emptiness check.

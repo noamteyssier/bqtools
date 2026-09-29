@@ -5,7 +5,7 @@ use binseq::BinseqRecord;
 use serde::Serialize;
 use std::sync::Mutex;
 
-use super::report::table;
+use super::report::{add_assign, stats, table, write_tsv};
 use crate::commands::{match_output, qc::modules::QcModule};
 
 const SEQ_LENGTH_PRIMARY_PATH: &str = "seq_length_R1.tsv";
@@ -43,39 +43,21 @@ impl SeqLenHistogram {
         if self.len() < other.len() {
             self.inner.resize(other.len(), 0);
         }
-        self.inner
-            .iter_mut()
-            .zip(other.inner.iter_mut())
-            .for_each(|(u, v)| {
-                *u += *v;
-                *v = 0;
-            });
+        add_assign(&mut self.inner, &mut other.inner);
     }
     fn serialize_to<W: Write>(&self, wtr: &mut W) -> Result<()> {
         if self.is_empty() {
             return Ok(());
         }
 
-        let mut ser = csv::WriterBuilder::default()
-            .delimiter(b'\t')
-            .has_headers(true)
-            .from_writer(wtr);
-
-        self.inner
-            .iter()
-            .copied()
-            .enumerate()
-            .filter(|(_, count)| *count > 0)
-            .try_for_each(|(len, count)| -> Result<()> {
-                ser.serialize(&SeqLenRecord { len, count })
-                    .map_err(Into::into)
-            })?;
-
-        ser.flush().map_err(Into::into)
-    }
-
-    fn total(&self) -> usize {
-        self.inner.iter().sum()
+        write_tsv(
+            wtr,
+            self.inner
+                .iter()
+                .enumerate()
+                .filter(|(_, &count)| count > 0)
+                .map(|(len, &count)| SeqLenRecord { len, count }),
+        )
     }
 
     fn min_len(&self) -> Option<usize> {
@@ -86,36 +68,19 @@ impl SeqLenHistogram {
         self.inner.iter().rposition(|&c| c > 0)
     }
 
-    fn mean(&self) -> f64 {
-        let total = self.total();
-        if total == 0 {
-            0.0
-        } else {
-            let sum: usize = self.inner.iter().enumerate().map(|(len, &c)| len * c).sum();
-            sum as f64 / total as f64
-        }
-    }
-
-    fn mode(&self) -> usize {
-        self.inner
-            .iter()
-            .enumerate()
-            .max_by_key(|&(_, &c)| c)
-            .map_or(0, |(len, _)| len)
-    }
-
     fn summary_table(&self) -> Option<String> {
         if self.is_empty() {
             return None;
         }
+        let (total, mean, _, mode) = stats(&self.inner);
         Some(table(
             &["Metric", "Value"],
             &[
-                vec!["Reads".into(), self.total().to_string()],
+                vec!["Reads".into(), total.to_string()],
                 vec!["Min Length".into(), self.min_len().unwrap_or(0).to_string()],
                 vec!["Max Length".into(), self.max_len().unwrap_or(0).to_string()],
-                vec!["Mean Length".into(), format!("{:.2}", self.mean())],
-                vec!["Mode Length".into(), self.mode().to_string()],
+                vec!["Mean Length".into(), format!("{mean:.2}")],
+                vec!["Mode Length".into(), mode.to_string()],
             ],
         ))
     }
@@ -197,10 +162,10 @@ mod tests {
         hist.push(100);
         hist.push(150);
         assert!(!hist.is_empty());
-        assert_eq!(hist.total(), 3);
+        assert_eq!(stats(&hist.inner).0, 3);
         assert_eq!(hist.min_len(), Some(100));
         assert_eq!(hist.max_len(), Some(150));
-        assert_eq!(hist.mode(), 100);
+        assert_eq!(stats(&hist.inner).3, 100);
     }
 
     #[test]
@@ -209,7 +174,7 @@ mod tests {
         hist.push(100);
         hist.push(100);
         hist.push(200);
-        assert!((hist.mean() - 133.333_333_333_333_33).abs() < 1e-6);
+        assert!((stats(&hist.inner).1 - 133.333_333_333_333_33).abs() < 1e-6);
     }
 
     #[test]
@@ -239,7 +204,7 @@ mod tests {
 
         a.ingest(&mut b);
 
-        assert_eq!(a.total(), 2);
+        assert_eq!(stats(&a.inner).0, 2);
         assert_eq!(a.min_len(), Some(100));
         assert_eq!(a.max_len(), Some(200));
         assert!(b.is_empty());
