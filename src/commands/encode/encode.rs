@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use anyhow::{bail, Result};
 use binseq::BinseqWriterBuilder;
 use log::trace;
@@ -32,14 +34,7 @@ pub fn encode_collection(
         bail!("All input files must have the same format.");
     }
     let ohandle = match_output(opath)?;
-    let mut builder = BinseqWriterBuilder::new(mode.into())
-        .block_size(config.block_size)
-        .compression(config.compress)
-        .compression_level(config.compression_level)
-        .headers(config.headers)
-        .quality(config.quality)
-        .policy(config.policy)
-        .bitsize(config.bitsize);
+    let mut builder = builder(mode, &config);
 
     if !matches!(collection.collection_type(), fastx::CollectionType::Single) {
         builder = builder.paired(true);
@@ -47,20 +42,19 @@ pub fn encode_collection(
 
     // insert the slen and xlen on the builder for BQ
     if matches!(mode, BinseqMode::Bq) {
-        match collection.collection_type() {
+        let ctype = collection.collection_type();
+        let inner = collection.inner_mut();
+        match ctype {
             fastx::CollectionType::Single => {
-                let inner = collection.inner_mut();
                 let slen = get_sequence_len(&mut inner[0])?;
-                builder = builder.slen(slen as u32);
+                builder = builder.slen(slen);
             }
             fastx::CollectionType::Paired => {
-                let inner = collection.inner_mut();
                 let slen = get_sequence_len(&mut inner[0])?;
                 let xlen = get_sequence_len(&mut inner[1])?;
-                builder = builder.slen(slen as u32).xlen(xlen as u32);
+                builder = builder.slen(slen).xlen(xlen);
             }
             fastx::CollectionType::Interleaved => {
-                let inner = collection.inner_mut();
                 let (slen, xlen) = get_interleaved_sequence_len(&mut inner[0])?;
                 builder = builder.slen(slen).xlen(xlen);
             }
@@ -72,9 +66,7 @@ pub fn encode_collection(
     let writer = builder.build(ohandle)?;
     let mut processor = Encoder::new(writer)?;
     process_collection(collection, &mut processor, config.threads)?;
-    processor.finish()?;
-
-    Ok(processor.counts())
+    finish(&mut processor)
 }
 
 fn process_collection<P>(
@@ -86,31 +78,42 @@ where
     P: for<'a> ParallelProcessor<fastx::RefRecord<'a>>
         + for<'a> PairedParallelProcessor<fastx::RefRecord<'a>>,
 {
+    let kind = match collection.collection_type() {
+        fastx::CollectionType::Single => "single",
+        fastx::CollectionType::Paired => "paired",
+        fastx::CollectionType::Interleaved => "interleaved",
+        _ => bail!("Unsupported collection type"),
+    };
+    trace!(
+        "Processing {kind} collection of size {}",
+        collection.inner().len()
+    );
     match collection.collection_type() {
-        fastx::CollectionType::Single => {
-            trace!(
-                "Processing single collection of size {}",
-                collection.inner().len()
-            );
-            collection.process_parallel(processor, threads, None)?;
-        }
+        fastx::CollectionType::Single => collection.process_parallel(processor, threads, None)?,
         fastx::CollectionType::Paired => {
-            trace!(
-                "Processing paired collection of size {}",
-                collection.inner().len()
-            );
             collection.process_parallel_paired(processor, threads, None)?;
         }
-        fastx::CollectionType::Interleaved => {
-            trace!(
-                "Processing interleaved collection of size {}",
-                collection.inner().len()
-            );
-            collection.process_parallel_interleaved(processor, threads, None)?;
-        }
-        _ => bail!("Unsupported collection type"),
+        _ => collection.process_parallel_interleaved(processor, threads, None)?,
     }
     Ok(())
+}
+
+/// Common writer settings for every input type.
+fn builder(mode: BinseqMode, config: &BinseqConfig) -> BinseqWriterBuilder {
+    BinseqWriterBuilder::new(mode.into())
+        .block_size(config.block_size)
+        .compression(config.compress)
+        .compression_level(config.compression_level)
+        .headers(config.headers)
+        .quality(config.quality)
+        .policy(config.policy)
+        .bitsize(config.bitsize)
+}
+
+/// Finish the writer and return the `(written, skipped)` record counts.
+fn finish<W: Write + Send>(processor: &mut Encoder<W>) -> Result<(usize, usize)> {
+    processor.finish()?;
+    Ok(processor.counts())
 }
 
 #[cfg(feature = "htslib")]
@@ -125,15 +128,7 @@ pub fn encode_htslib(
     use paraseq::{htslib, prelude::*};
 
     let ohandle = match_output(opath)?;
-    let mut builder = BinseqWriterBuilder::new(mode.into())
-        .block_size(config.block_size)
-        .compression(config.compress)
-        .compression_level(config.compression_level)
-        .headers(config.headers)
-        .quality(config.quality)
-        .policy(config.policy)
-        .bitsize(config.bitsize)
-        .paired(paired);
+    let mut builder = builder(mode, &config).paired(paired);
 
     if matches!(mode, BinseqMode::Bq) {
         let (slen, xlen) = get_sequence_len_htslib(inpath, paired)?;
@@ -147,7 +142,5 @@ pub fn encode_htslib(
     } else {
         reader.process_parallel(&mut processor, config.threads)
     }?;
-    processor.finish()?;
-
-    Ok(processor.counts())
+    finish(&mut processor)
 }
