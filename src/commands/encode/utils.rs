@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::LazyLock};
 
 use anyhow::{bail, Context, Result};
 use hashbrown::HashMap;
-use log::{error, warn};
+use log::warn;
 use paraseq::{fastx, Record};
 use regex::Regex;
 
@@ -140,7 +140,6 @@ pub fn generate_output_name(input_files: &[PathBuf], new_extension: &str) -> Res
         regex.replace(input_path, new_extension).into_owned()
     };
     if output_name == input_path {
-        error!("Unable to autodetermine the output filename for {input_path}");
         bail!("Unable to autodetermine the output filename for {input_path}");
     }
     Ok(output_name)

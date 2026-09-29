@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use log::{error, trace};
+use log::trace;
 
 use crate::commands::encode::utils::generate_output_name;
 
@@ -21,10 +21,8 @@ impl EncodeCommand {
         } else if self.output.pipe {
             Ok(None)
         } else if self.input.is_stdin() {
-            error!("Output path must be provided if using stdin");
             bail!("Output path must be provided if using stdin")
         } else if self.input.num_files() > 1 + usize::from(self.input.paired()) {
-            error!("Output path must be provided if collating multiple files");
             bail!("Output path must be provided if collating multiple files")
         } else {
             let outpath = if self.input.paired() {

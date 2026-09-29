@@ -37,44 +37,42 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
     let mode = args.output.mode();
     let config = args.output.options.into();
 
-    let (num_records, num_skipped) = if !paired
-        && matches!(args.input.format(), Some(FileFormat::Bam))
-    {
-        #[cfg(not(feature = "htslib"))]
-        {
-            error!("Missing feature flag - htslib. Please compile with htslib feature flag enabled to process HTSlib files");
-            bail!("Missing feature flag - htslib");
-        }
+    let (num_records, num_skipped) =
+        if !paired && matches!(args.input.format(), Some(FileFormat::Bam)) {
+            #[cfg(not(feature = "htslib"))]
+            {
+                bail!("Missing feature flag - htslib");
+            }
 
-        #[cfg(feature = "htslib")]
-        {
-            let (kind, context) = if interleaved {
-                ("interleaved", "Must provide an input path for htslib")
-            } else {
-                ("single", "Must provide an input path for htslib")
-            };
-            trace!("launching {kind} encoding (htslib)");
-            encode_htslib(
-                args.input.single_path()?.context(context)?,
-                opath.as_deref(),
-                mode?,
-                config,
-                interleaved,
-            )
-        }
-    } else {
-        let collection = if paired {
-            trace!("launching paired encoding");
-            args.input.build_paired_collection()?
-        } else if interleaved {
-            trace!("launching interleaved encoding (fastx)");
-            args.input.build_interleaved_collection()?
+            #[cfg(feature = "htslib")]
+            {
+                let (kind, context) = if interleaved {
+                    ("interleaved", "Must provide an input path for htslib")
+                } else {
+                    ("single", "Must provide an input path for htslib")
+                };
+                trace!("launching {kind} encoding (htslib)");
+                encode_htslib(
+                    args.input.single_path()?.context(context)?,
+                    opath.as_deref(),
+                    mode?,
+                    config,
+                    interleaved,
+                )
+            }
         } else {
-            trace!("launching single encoding (fastx)");
-            args.input.build_single_collection()?
-        };
-        encode_collection(collection, opath.as_deref(), mode?, config)
-    }?;
+            let collection = if paired {
+                trace!("launching paired encoding");
+                args.input.build_paired_collection()?
+            } else if interleaved {
+                trace!("launching interleaved encoding (fastx)");
+                args.input.build_interleaved_collection()?
+            } else {
+                trace!("launching single encoding (fastx)");
+                args.input.build_single_collection()?
+            };
+            encode_collection(collection, opath.as_deref(), mode?, config)
+        }?;
 
     info!(
         "Wrote {num_records} records to: {}",
@@ -246,7 +244,6 @@ fn process_file_list(args: &EncodeCommand, file_queue: Vec<PathBuf>) -> Result<(
         && args.output.output.is_none()
         && pqueue.iter().any(|group| group.len() > group_size)
     {
-        error!("Output path must be provided when collating multiple files");
         bail!("Output path must be provided when collating multiple files");
     }
 
