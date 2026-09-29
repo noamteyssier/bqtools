@@ -5,7 +5,7 @@ use binseq::{BinseqReader, ParallelReader};
 
 #[cfg(feature = "fuzzy")]
 use splitter::FuzzySplitter;
-use splitter::{AhoCorasickSplitter, RegexSplitter, SplitProcessor, Splitter};
+use splitter::{AhoCorasickSplitter, Matcher, RegexSplitter, SplitProcessor, Splitter};
 
 use crate::{
     cli::SplitCommand,
@@ -43,7 +43,7 @@ fn build_splitter(args: &SplitCommand) -> Result<Splitter> {
             args.fuzzy_args.distance,
             args.fuzzy_args.inexact,
         );
-        let splitter = FuzzySplitter::new(
+        let matcher = FuzzySplitter::new(
             &pat1,
             &pat2,
             &pat,
@@ -51,7 +51,12 @@ fn build_splitter(args: &SplitCommand) -> Result<Splitter> {
             args.fuzzy_args.inexact,
             args.fuzzy_args.max_n_frac,
         )?;
-        return Ok(Splitter::Fuzzy(Box::new(splitter)));
+        return Ok(Splitter::new(
+            Matcher::Fuzzy(Box::new(matcher)),
+            &pat1,
+            &pat2,
+            &pat,
+        ));
     }
 
     let use_fixed = args.split.fixed || all_patterns_fixed(&[&pat1, &pat2, &pat]);
@@ -64,12 +69,17 @@ fn build_splitter(args: &SplitCommand) -> Result<Splitter> {
             "Using Aho-Corasick splitter backend (dfa={})",
             !args.split.no_dfa,
         );
-        let splitter = AhoCorasickSplitter::new(&pat1, &pat2, &pat, args.split.no_dfa)?;
-        Ok(Splitter::AhoCorasick(splitter))
+        let matcher = AhoCorasickSplitter::new(&pat1, &pat2, &pat, args.split.no_dfa)?;
+        Ok(Splitter::new(
+            Matcher::AhoCorasick(matcher),
+            &pat1,
+            &pat2,
+            &pat,
+        ))
     } else {
         log::trace!("Using regex splitter backend");
-        let splitter = RegexSplitter::new(&pat1, &pat2, &pat)?;
-        Ok(Splitter::Regex(splitter))
+        let matcher = RegexSplitter::new(&pat1, &pat2, &pat)?;
+        Ok(Splitter::new(Matcher::Regex(matcher), &pat1, &pat2, &pat))
     }
 }
 

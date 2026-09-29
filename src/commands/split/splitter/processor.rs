@@ -10,10 +10,7 @@ use std::sync::Mutex;
 
 use crate::{
     cli::SplitCommand,
-    commands::{
-        match_output,
-        split::splitter::{SequenceSplit, Splitter},
-    },
+    commands::{match_output, split::splitter::Splitter},
     types::BoxedWriter,
 };
 

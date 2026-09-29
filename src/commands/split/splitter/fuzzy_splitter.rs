@@ -1,54 +1,27 @@
-use hashbrown::HashMap;
-
 use anyhow::Result;
 use fixedbitset::FixedBitSet;
-use sassy::{profiles::Iupac, EncodedPatterns, Match, Searcher};
+use sassy::{profiles::Iupac, EncodedPatterns, Searcher};
 
-use crate::commands::{
-    grep::PatternCollection, split::splitter::SequenceSplit, utils::build_fuzzy_searcher,
-};
+use crate::commands::{grep::PatternCollection, utils::build_fuzzy_searcher};
 
 type Profile = Iupac;
 
-/// Splits records into output bins using fuzzy (edit-distance) matching via `sassy`.
-///
-/// Patterns are matched against the primary sequence (`pat1`), the secondary
-/// sequence (`pat2`), and either sequence (`pat`). A record is assigned to a bin
-/// only when its matches resolve to exactly one unique alias.
+/// A searcher with its encoded patterns; `None` when the pattern set is empty.
+type Set = Option<(Searcher<Profile>, EncodedPatterns<Profile>)>;
+
+/// Fuzzy (edit-distance) matching via `sassy` over the three pattern sets
+/// (primary-only, secondary-only, either).
 #[derive(Clone)]
 pub struct FuzzySplitter {
-    pat1: Option<EncodedPatterns<Profile>>,
-    pat2: Option<EncodedPatterns<Profile>>,
-    pat: Option<EncodedPatterns<Profile>>,
+    sets: [Set; 3],
 
-    /// Number of patterns in `pat1` (offset for `pat2` bits)
-    n_pat1: usize,
-    /// Number of patterns in `pat2` (offset for `pat` bits)
-    n_pat2: usize,
+    /// Global pattern index of the first pattern in each set
+    offsets: [usize; 3],
 
     /// Maximum edit distance to accept
     k: usize,
     /// Whether to only accept inexact matches
     inexact: bool,
-
-    /// Primary sequence searcher
-    searcher_1: Searcher<Profile>,
-    /// Secondary sequence searcher
-    searcher_2: Searcher<Profile>,
-    /// Shared sequence searcher
-    searcher: Searcher<Profile>,
-
-    /// bitset over all patterns
-    all_bits: FixedBitSet,
-
-    /// bitset over all unique aliases
-    unique_bits: FixedBitSet,
-
-    /// unique aliases across all pattern sets
-    unique_aliases: Vec<String>,
-
-    /// points to which alias is present at global pattern index
-    alias_indices: Vec<usize>,
 }
 
 impl FuzzySplitter {
@@ -61,166 +34,33 @@ impl FuzzySplitter {
         max_n_frac: Option<f32>,
     ) -> Result<Self> {
         // validate lengths, resolve max_n_frac, and encode patterns per pattern set
-        let (searcher_1, enc_pat1) = build_fuzzy_searcher(&pat1.bytes(), k, max_n_frac)?;
-        let (searcher_2, enc_pat2) = build_fuzzy_searcher(&pat2.bytes(), k, max_n_frac)?;
-        let (searcher, enc_pat) = build_fuzzy_searcher(&pat.bytes(), k, max_n_frac)?;
-
-        let all_bits = FixedBitSet::with_capacity(pat1.len() + pat2.len() + pat.len());
-
-        let mut alias_indices = Vec::new();
-        let mut unique_aliases = Vec::new();
-        let mut map = HashMap::new();
-        for name in pat1
-            .names()
-            .into_iter()
-            .chain(pat2.names())
-            .chain(pat.names())
-        {
-            let idx = if let Some(idx) = map.get(&name) {
-                *idx
-            } else {
-                unique_aliases.push(name.clone());
-                let alias_index = map.len();
-                map.insert(name, alias_index);
-                alias_index
-            };
-            alias_indices.push(idx);
-        }
-        let unique_bits = FixedBitSet::with_capacity(unique_aliases.len());
-
+        let build = |p: &PatternCollection| -> Result<Set> {
+            let (searcher, enc) = build_fuzzy_searcher(&p.bytes(), k, max_n_frac)?;
+            Ok(enc.map(|e| (searcher, e)))
+        };
         Ok(Self {
-            pat1: enc_pat1,
-            pat2: enc_pat2,
-            pat: enc_pat,
-            n_pat1: pat1.len(),
-            n_pat2: pat2.len(),
+            sets: [build(pat1)?, build(pat2)?, build(pat)?],
+            offsets: [0, pat1.len(), pat1.len() + pat2.len()],
             k,
             inexact,
-            searcher_1,
-            searcher_2,
-            searcher,
-            all_bits,
-            unique_bits,
-            unique_aliases,
-            alias_indices,
         })
     }
 
-    fn reset_bits(&mut self) {
-        self.all_bits.clear();
-        self.unique_bits.clear();
-    }
-
-    fn match_primary(&mut self, sequence: &[u8]) {
-        if let Some(ref epat) = self.pat1 {
-            search(
-                &mut self.searcher_1,
-                epat,
-                sequence,
-                &mut self.all_bits,
-                self.k,
-                self.inexact,
-                0,
-            );
-        }
-    }
-
-    fn match_secondary(&mut self, sequence: &[u8]) {
-        if let Some(ref epat) = self.pat2 {
-            search(
-                &mut self.searcher_2,
-                epat,
-                sequence,
-                &mut self.all_bits,
-                self.k,
-                self.inexact,
-                self.n_pat1,
-            );
-        }
-    }
-
-    fn match_either(&mut self, primary: &[u8], secondary: &[u8]) {
-        if let Some(ref epat) = self.pat {
-            let offset = self.n_pat1 + self.n_pat2;
-            search(
-                &mut self.searcher,
-                epat,
-                primary,
-                &mut self.all_bits,
-                self.k,
-                self.inexact,
-                offset,
-            );
-            search(
-                &mut self.searcher,
-                epat,
-                secondary,
-                &mut self.all_bits,
-                self.k,
-                self.inexact,
-                offset,
-            );
-        }
-    }
-}
-
-impl SequenceSplit for FuzzySplitter {
-    fn split_idx(&mut self, primary: &[u8], secondary: &[u8]) -> Option<usize> {
-        self.reset_bits();
-        self.match_primary(primary);
-        self.match_secondary(secondary);
-        self.match_either(primary, secondary);
-
-        self.all_bits.ones().for_each(|idx| {
-            if let Some(u_idx) = self.alias_indices.get(idx) {
-                self.unique_bits.set(*u_idx, true);
+    /// Sets a bit in `bits` for every pattern found in the sequences.
+    pub fn hit(&mut self, primary: &[u8], secondary: &[u8], bits: &mut FixedBitSet) {
+        let seqs: [&[&[u8]]; 3] = [&[primary], &[secondary], &[primary, secondary]];
+        for ((set, offset), seqs) in self.sets.iter_mut().zip(self.offsets).zip(seqs) {
+            let Some((searcher, patterns)) = set else {
+                continue;
+            };
+            for seq in seqs.iter().filter(|s| !s.is_empty()) {
+                for m in searcher.search_encoded_patterns(patterns, seq, self.k) {
+                    if !(self.inexact && m.cost == 0) {
+                        bits.insert(offset + m.pattern_idx);
+                    }
+                }
             }
-        });
-
-        get_single_hit(&self.unique_bits)
-    }
-
-    fn aliases(&self) -> &[String] {
-        &self.unique_aliases
-    }
-}
-
-fn search(
-    searcher: &mut Searcher<Profile>,
-    patterns: &EncodedPatterns<Profile>,
-    sequence: &[u8],
-    bitset: &mut FixedBitSet,
-    k: usize,
-    inexact: bool,
-    offset: usize,
-) {
-    if sequence.is_empty() {
-        return;
-    }
-    searcher
-        .search_encoded_patterns(patterns, sequence, k)
-        .iter()
-        .for_each(|m: &Match| {
-            if inexact && m.cost == 0 {
-                return;
-            }
-            bitset.set(offset + m.pattern_idx, true);
-        });
-}
-
-fn get_single_hit(bitset: &FixedBitSet) -> Option<usize> {
-    let mut num_hits = 0;
-    let match_id = bitset
-        .ones()
-        .inspect(|_idx| {
-            num_hits += 1;
-        })
-        .last();
-
-    if num_hits == 1 {
-        match_id
-    } else {
-        None
+        }
     }
 }
 
@@ -228,7 +68,8 @@ fn get_single_hit(bitset: &FixedBitSet) -> Option<usize> {
 mod tests {
     use super::FuzzySplitter;
     use crate::commands::grep::Pattern;
-    use crate::commands::{grep::PatternCollection, split::splitter::SequenceSplit};
+    use crate::commands::grep::PatternCollection;
+    use crate::commands::split::splitter::{Matcher, Splitter};
 
     fn pc(patterns: &[&[u8]], name: &str) -> PatternCollection {
         PatternCollection(
@@ -249,7 +90,8 @@ mod tests {
     fn test_fuzzy_splitter_default_max_n_frac_rejects_all_n_match() {
         let pat1 = pc(&[b"ACGTACGTACGT"], "alias");
         let empty = PatternCollection(vec![]);
-        let mut splitter = FuzzySplitter::new(&pat1, &empty, &empty, 1, false, None).unwrap();
+        let m = FuzzySplitter::new(&pat1, &empty, &empty, 1, false, None).unwrap();
+        let mut splitter = Splitter::new(Matcher::Fuzzy(Box::new(m)), &pat1, &empty, &empty);
 
         let all_n = b"NNNNNNNNNNNNNNNNNN";
         assert_eq!(
@@ -263,7 +105,8 @@ mod tests {
     fn test_fuzzy_splitter_max_n_frac_override_allows_all_n_match() {
         let pat1 = pc(&[b"ACGTACGTACGT"], "alias");
         let empty = PatternCollection(vec![]);
-        let mut splitter = FuzzySplitter::new(&pat1, &empty, &empty, 1, false, Some(1.0)).unwrap();
+        let m = FuzzySplitter::new(&pat1, &empty, &empty, 1, false, Some(1.0)).unwrap();
+        let mut splitter = Splitter::new(Matcher::Fuzzy(Box::new(m)), &pat1, &empty, &empty);
 
         let all_n = b"NNNNNNNNNNNNNNNNNN";
         assert_eq!(
