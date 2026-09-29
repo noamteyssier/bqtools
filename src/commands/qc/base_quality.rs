@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::sync::Mutex;
 
 use super::{report::table, QualAbundance, DEFAULT_QUAL_ABUNDANCE, PHRED_OFFSET};
-use crate::commands::{match_output, qc::modules::QcModule, utils::make_directory};
+use crate::commands::{match_output, qc::modules::QcModule};
 
 const BASE_QUALITY_PRIMARY_PATH: &str = "base_quality_R1.tsv";
 const BASE_QUALITY_EXTENDED_PATH: &str = "base_quality_R2.tsv";
@@ -200,7 +200,7 @@ impl QcModule for PerBaseSequenceQuality {
 
     fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
         if !outdir.as_ref().exists() {
-            make_directory(outdir.as_ref())?;
+            std::fs::create_dir_all(outdir.as_ref())?;
         }
 
         let write_to = |base_qual: &BaseHistogram, primary: bool| -> Result<()> {

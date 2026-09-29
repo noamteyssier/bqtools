@@ -1,10 +1,12 @@
 use std::{
-    fs::{self, File},
+    fs::File,
     io::{self, BufWriter, Write},
     path::Path,
 };
 
-use anyhow::{bail, Result};
+#[cfg(feature = "fuzzy")]
+use anyhow::bail;
+use anyhow::Result;
 use gzp::{
     deflate::Gzip,
     par::compress::{ParCompress, ParCompressBuilder},
@@ -12,26 +14,6 @@ use gzp::{
 use log::trace;
 #[cfg(feature = "fuzzy")]
 use sassy::{profiles::Iupac, EncodedPatterns, Searcher};
-
-pub fn make_directory<P: AsRef<Path>>(path: P) -> Result<()> {
-    if path.as_ref().exists() {
-        if path.as_ref().is_dir() {
-            trace!(
-                "Skipping directory creation for existing directory: {}",
-                path.as_ref().display()
-            );
-        } else {
-            bail!(
-                "Cannot create directory at existing file path: {}",
-                path.as_ref().display()
-            );
-        }
-    } else {
-        trace!("creating directory: {}", path.as_ref().display());
-        fs::create_dir_all(path)?;
-    }
-    Ok(())
-}
 
 pub fn match_output<P: AsRef<Path>>(path: Option<P>) -> Result<Box<dyn Write + Send>> {
     let inner: Box<dyn Write + Send> = if let Some(path) = path {
