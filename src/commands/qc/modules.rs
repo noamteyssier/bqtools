@@ -1,47 +1,13 @@
-use std::{any::type_name, path::Path};
+use std::path::Path;
 
 use anyhow::Result;
 use binseq::BinseqRecord;
 
-use crate::{
-    cli::QcOptions,
-    commands::qc::{
-        base_content::PerBaseSequenceContent, base_quality::PerBaseSequenceQuality,
-        dup_levels::SequenceDuplicationLevels, gc_content::PerSequenceGcContent,
-        seq_length::SequenceLengthDistribution, seq_quality::PerSequenceQuality,
-    },
+use crate::commands::qc::{
+    base_content::PerBaseSequenceContent, base_quality::PerBaseSequenceQuality,
+    dup_levels::SequenceDuplicationLevels, gc_content::PerSequenceGcContent,
+    seq_length::SequenceLengthDistribution, seq_quality::PerSequenceQuality,
 };
-
-pub trait QcModule {
-    fn desc(&self) -> &'static str {
-        let full_type = type_name::<Self>();
-        if let Some(base) = full_type.split("::").last() {
-            base
-        } else {
-            full_type
-        }
-    }
-    fn push<R: BinseqRecord>(&mut self, record: &R);
-
-    /// Called after each batch. Default no-op.
-    ///
-    /// Use if on-thread memory accumulation should be drained at regular
-    /// intervals.
-    fn sync_batch(&mut self) {}
-
-    /// Called once, when a thread has finished all of its batches. This is
-    /// where thread-local state should be merged into shared/global state.
-    fn sync_final(&mut self);
-
-    fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()>;
-
-    /// Renders this module's headline stats as a markdown section for the
-    /// top-level QC report. Default: no section (e.g. nothing worth
-    /// summarizing beyond the module's own TSV output).
-    fn summarize(&self) -> String {
-        String::new()
-    }
-}
 
 #[derive(Clone)]
 pub enum QcModuleType {
@@ -53,37 +19,7 @@ pub enum QcModuleType {
     Duplication(SequenceDuplicationLevels),
 }
 impl QcModuleType {
-    pub fn new_base_quality() -> Self {
-        Self::BaseQuality(PerBaseSequenceQuality::default())
-    }
-    pub fn new_seq_quality() -> Self {
-        Self::SeqQuality(PerSequenceQuality::default())
-    }
-    pub fn new_base_content() -> Self {
-        Self::BaseContent(PerBaseSequenceContent::default())
-    }
-    pub fn new_gc_content() -> Self {
-        Self::GcContent(PerSequenceGcContent::default())
-    }
-    pub fn new_seq_length() -> Self {
-        Self::SeqLength(SequenceLengthDistribution::default())
-    }
-    pub fn new_duplication(opts: &QcOptions, span_start: usize) -> Self {
-        Self::Duplication(SequenceDuplicationLevels::new(opts, span_start))
-    }
-}
-impl QcModule for QcModuleType {
-    fn desc(&self) -> &'static str {
-        match self {
-            Self::BaseQuality(x) => x.desc(),
-            Self::SeqQuality(x) => x.desc(),
-            Self::BaseContent(x) => x.desc(),
-            Self::GcContent(x) => x.desc(),
-            Self::SeqLength(x) => x.desc(),
-            Self::Duplication(x) => x.desc(),
-        }
-    }
-    fn push<R: BinseqRecord>(&mut self, record: &R) {
+    pub fn push<R: BinseqRecord>(&mut self, record: &R) {
         match self {
             Self::BaseQuality(x) => x.push(record),
             Self::SeqQuality(x) => x.push(record),
@@ -93,17 +29,9 @@ impl QcModule for QcModuleType {
             Self::Duplication(x) => x.push(record),
         }
     }
-    fn sync_batch(&mut self) {
-        match self {
-            Self::BaseQuality(x) => x.sync_batch(),
-            Self::SeqQuality(x) => x.sync_batch(),
-            Self::BaseContent(x) => x.sync_batch(),
-            Self::GcContent(x) => x.sync_batch(),
-            Self::SeqLength(x) => x.sync_batch(),
-            Self::Duplication(x) => x.sync_batch(),
-        }
-    }
-    fn sync_final(&mut self) {
+    /// Called once, when a thread has finished all of its batches: merges
+    /// thread-local state into shared state.
+    pub fn sync_final(&mut self) {
         match self {
             Self::BaseQuality(x) => x.sync_final(),
             Self::SeqQuality(x) => x.sync_final(),
@@ -113,17 +41,18 @@ impl QcModule for QcModuleType {
             Self::Duplication(x) => x.sync_final(),
         }
     }
-    fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
+    pub fn finish(&mut self, outdir: &Path) -> Result<()> {
         match self {
-            Self::BaseQuality(x) => x.finish(&outdir),
-            Self::SeqQuality(x) => x.finish(&outdir),
-            Self::BaseContent(x) => x.finish(&outdir),
-            Self::GcContent(x) => x.finish(&outdir),
-            Self::SeqLength(x) => x.finish(&outdir),
-            Self::Duplication(x) => x.finish(&outdir),
+            Self::BaseQuality(x) => x.finish(outdir),
+            Self::SeqQuality(x) => x.finish(outdir),
+            Self::BaseContent(x) => x.finish(outdir),
+            Self::GcContent(x) => x.finish(outdir),
+            Self::SeqLength(x) => x.finish(outdir),
+            Self::Duplication(x) => x.finish(outdir),
         }
     }
-    fn summarize(&self) -> String {
+    /// Renders this module's headline stats as a markdown section.
+    pub fn summarize(&self) -> String {
         match self {
             Self::BaseQuality(x) => x.summarize(),
             Self::SeqQuality(x) => x.summarize(),

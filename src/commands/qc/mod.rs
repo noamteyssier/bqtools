@@ -14,8 +14,6 @@ mod report;
 mod seq_length;
 mod seq_quality;
 
-use modules::QcModule;
-
 pub const PHRED_OFFSET: u8 = 33;
 pub type QualAbundance = [usize; 94];
 pub const DEFAULT_QUAL_ABUNDANCE: QualAbundance = [0; 94];

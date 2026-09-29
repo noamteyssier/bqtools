@@ -8,7 +8,6 @@ use super::{
     report::{add_assign, stats, table, write_tsv, Hist, Pair},
     QualAbundance, DEFAULT_QUAL_ABUNDANCE, PHRED_OFFSET,
 };
-use crate::commands::qc::modules::QcModule;
 
 #[derive(Serialize)]
 pub struct BaseQualityRecord {
@@ -134,24 +133,24 @@ impl Hist for BaseHistogram {
 
 #[derive(Clone, Default)]
 pub struct PerBaseSequenceQuality(Pair<BaseHistogram>);
-impl QcModule for PerBaseSequenceQuality {
-    fn push<R: BinseqRecord>(&mut self, record: &R) {
+impl PerBaseSequenceQuality {
+    pub fn push<R: BinseqRecord>(&mut self, record: &R) {
         self.0.t[0].push(record.squal());
         self.0.t[1].push(record.xqual());
     }
 
-    fn sync_final(&mut self) {
+    pub fn sync_final(&mut self) {
         self.0.sync_final();
     }
 
-    fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
-        if !outdir.as_ref().exists() {
-            std::fs::create_dir_all(outdir.as_ref())?;
+    pub fn finish(&mut self, outdir: &Path) -> Result<()> {
+        if !outdir.exists() {
+            std::fs::create_dir_all(outdir)?;
         }
-        self.0.write(outdir.as_ref(), "base_quality")
+        self.0.write(outdir, "base_quality")
     }
 
-    fn summarize(&self) -> String {
+    pub fn summarize(&self) -> String {
         self.0.summarize("Per-Base Sequence Quality")
     }
 }

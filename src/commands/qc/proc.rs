@@ -1,8 +1,16 @@
 use std::{io::Write, path::PathBuf};
 
-use crate::{cli::QcOptions, commands::qc::modules::QcModuleType};
+use crate::{
+    cli::QcOptions,
+    commands::qc::{
+        base_content::PerBaseSequenceContent, base_quality::PerBaseSequenceQuality,
+        dup_levels::SequenceDuplicationLevels, gc_content::PerSequenceGcContent,
+        modules::QcModuleType, seq_length::SequenceLengthDistribution,
+        seq_quality::PerSequenceQuality,
+    },
+};
 
-use super::{report::table, QcModule};
+use super::report::table;
 
 use anyhow::{bail, Result};
 use binseq::ParallelProcessor;
@@ -31,29 +39,28 @@ impl QcProcessor {
         paired: bool,
     ) -> Result<Self> {
         let mut modules = Vec::default();
-        let mut add_module = |module: QcModuleType| {
-            trace!("Loaded: {}", module.desc());
-            modules.push(module);
-        };
-
         trace!("Loading QC modules...");
         if !opts.skip_base_qual {
-            add_module(QcModuleType::new_base_quality());
+            modules.push(QcModuleType::BaseQuality(PerBaseSequenceQuality::default()));
         }
         if !opts.skip_seq_qual {
-            add_module(QcModuleType::new_seq_quality());
+            modules.push(QcModuleType::SeqQuality(PerSequenceQuality::default()));
         }
         if !opts.skip_base_content {
-            add_module(QcModuleType::new_base_content());
+            modules.push(QcModuleType::BaseContent(PerBaseSequenceContent::default()));
         }
         if !opts.skip_seq_gc {
-            add_module(QcModuleType::new_gc_content());
+            modules.push(QcModuleType::GcContent(PerSequenceGcContent::default()));
         }
         if !opts.skip_seq_length {
-            add_module(QcModuleType::new_seq_length());
+            modules.push(QcModuleType::SeqLength(
+                SequenceLengthDistribution::default(),
+            ));
         }
         if !opts.skip_dup_levels || !opts.skip_overrepresented {
-            add_module(QcModuleType::new_duplication(opts, span_start));
+            modules.push(QcModuleType::Duplication(SequenceDuplicationLevels::new(
+                opts, span_start,
+            )));
         }
         trace!("{} modules loaded", modules.len());
 
@@ -120,17 +127,8 @@ impl ParallelProcessor for QcProcessor {
         Ok(())
     }
 
-    fn on_batch_complete(&mut self) -> binseq::Result<()> {
-        self.modules
-            .iter_mut()
-            .for_each(super::modules::QcModule::sync_batch);
-        Ok(())
-    }
-
     fn on_thread_complete(&mut self) -> binseq::Result<()> {
-        self.modules
-            .iter_mut()
-            .for_each(super::modules::QcModule::sync_final);
+        self.modules.iter_mut().for_each(QcModuleType::sync_final);
         Ok(())
     }
 }

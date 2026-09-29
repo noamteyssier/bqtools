@@ -4,7 +4,6 @@ use serde::Serialize;
 use std::{io::Write, path::Path};
 
 use super::report::{add_assign, stats, table, write_tsv, Hist, Pair};
-use crate::commands::qc::modules::QcModule;
 
 /// Percentage bins: 0..=100
 const NUM_GC_BINS: usize = 101;
@@ -87,24 +86,24 @@ impl Hist for GcHistogram {
 
 #[derive(Default, Clone)]
 pub struct PerSequenceGcContent(Pair<GcHistogram>);
-impl QcModule for PerSequenceGcContent {
-    fn push<R: BinseqRecord>(&mut self, record: &R) {
+impl PerSequenceGcContent {
+    pub fn push<R: BinseqRecord>(&mut self, record: &R) {
         self.0.t[0].push(record.sseq());
         self.0.t[1].push(record.xseq());
     }
 
-    fn sync_final(&mut self) {
+    pub fn sync_final(&mut self) {
         self.0.sync_final();
     }
 
-    fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
-        if !outdir.as_ref().exists() {
-            std::fs::create_dir_all(outdir.as_ref())?;
+    pub fn finish(&mut self, outdir: &Path) -> Result<()> {
+        if !outdir.exists() {
+            std::fs::create_dir_all(outdir)?;
         }
-        self.0.write(outdir.as_ref(), "gc_content")
+        self.0.write(outdir, "gc_content")
     }
 
-    fn summarize(&self) -> String {
+    pub fn summarize(&self) -> String {
         self.0.summarize("Per-Sequence GC Content")
     }
 }

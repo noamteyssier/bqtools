@@ -7,10 +7,7 @@ use log::trace;
 use serde::Serialize;
 
 use super::report::{dual_section, pct, table, write_tsv, Hist, Pair};
-use crate::{
-    cli::QcOptions,
-    commands::{match_output, qc::modules::QcModule},
-};
+use crate::{cli::QcOptions, commands::match_output};
 
 /// FastQC-style duplication level buckets: exact counts 1-9, then cumulative
 /// thresholds beyond that.
@@ -254,8 +251,8 @@ impl SequenceDuplicationLevels {
         }
     }
 }
-impl QcModule for SequenceDuplicationLevels {
-    fn push<R: BinseqRecord>(&mut self, record: &R) {
+impl SequenceDuplicationLevels {
+    pub fn push<R: BinseqRecord>(&mut self, record: &R) {
         if self
             .sample_end
             .is_some_and(|end| record.index() as usize >= end)
@@ -268,12 +265,11 @@ impl QcModule for SequenceDuplicationLevels {
         }
     }
 
-    fn sync_final(&mut self) {
+    pub fn sync_final(&mut self) {
         self.counts.sync_final();
     }
 
-    fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
-        let outdir = outdir.as_ref();
+    pub fn finish(&mut self, outdir: &Path) -> Result<()> {
         if !outdir.exists() {
             std::fs::create_dir_all(outdir)?;
         }
@@ -303,7 +299,7 @@ impl QcModule for SequenceDuplicationLevels {
         Ok(())
     }
 
-    fn summarize(&self) -> String {
+    pub fn summarize(&self) -> String {
         let mut out = String::new();
 
         if self.emit_levels {

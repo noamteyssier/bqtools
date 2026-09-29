@@ -5,7 +5,6 @@ use binseq::BinseqRecord;
 use serde::Serialize;
 
 use super::report::{add_assign, stats, table, write_tsv, Hist, Pair};
-use crate::commands::qc::modules::QcModule;
 
 #[derive(Serialize)]
 pub struct SeqLenRecord {
@@ -88,24 +87,24 @@ impl Hist for SeqLenHistogram {
 
 #[derive(Clone, Default)]
 pub struct SequenceLengthDistribution(Pair<SeqLenHistogram>);
-impl QcModule for SequenceLengthDistribution {
-    fn push<R: BinseqRecord>(&mut self, record: &R) {
+impl SequenceLengthDistribution {
+    pub fn push<R: BinseqRecord>(&mut self, record: &R) {
         self.0.t[0].push(record.slen() as usize);
         self.0.t[1].push(record.xlen() as usize);
     }
 
-    fn sync_final(&mut self) {
+    pub fn sync_final(&mut self) {
         self.0.sync_final();
     }
 
-    fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
-        if !outdir.as_ref().exists() {
-            std::fs::create_dir_all(outdir.as_ref())?;
+    pub fn finish(&mut self, outdir: &Path) -> Result<()> {
+        if !outdir.exists() {
+            std::fs::create_dir_all(outdir)?;
         }
-        self.0.write(outdir.as_ref(), "seq_length")
+        self.0.write(outdir, "seq_length")
     }
 
-    fn summarize(&self) -> String {
+    pub fn summarize(&self) -> String {
         self.0.summarize("Sequence Length Distribution")
     }
 }
