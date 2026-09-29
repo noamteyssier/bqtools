@@ -32,45 +32,15 @@ use encode::encode_collection;
 /// Run the encoding process for an atomic single/paired input
 fn run_atomic(args: &EncodeCommand) -> Result<()> {
     let opath = args.output_path()?;
-    let (num_records, num_skipped) = if args.input.paired() {
-        trace!("launching paired encoding");
-        encode_collection(
-            args.input.build_paired_collection()?,
-            opath.as_deref(),
-            args.output.mode()?,
-            args.output.options.into(),
-        )
-    } else if args.input.interleaved {
-        if let Some(FileFormat::Bam) = args.input.format() {
-            #[cfg(not(feature = "htslib"))]
-            {
-                error!("Missing feature flag - htslib. Please compile with htslib feature flag enabled to process HTSlib files");
-                bail!("Missing feature flag - htslib");
-            }
+    let paired = args.input.paired();
+    let interleaved = args.input.interleaved;
+    // evaluated lazily at each call site so input errors surface first
+    let mode = args.output.mode();
+    let config = args.output.options.into();
 
-            #[cfg(feature = "htslib")]
-            {
-                trace!("launching interleaved encoding (htslib)");
-                encode_htslib(
-                    args.input
-                        .single_path()?
-                        .context("Must provide an input path for HTSLib")?,
-                    opath.as_deref(),
-                    args.output.mode()?,
-                    args.output.options.into(),
-                    true,
-                )
-            }
-        } else {
-            trace!("launching interleaved encoding (fastx)");
-            encode_collection(
-                args.input.build_interleaved_collection()?,
-                opath.as_deref(),
-                args.output.mode()?,
-                args.output.options.into(),
-            )
-        }
-    } else if let Some(FileFormat::Bam) = args.input.format() {
+    let (num_records, num_skipped) = if !paired
+        && matches!(args.input.format(), Some(FileFormat::Bam))
+    {
         #[cfg(not(feature = "htslib"))]
         {
             error!("Missing feature flag - htslib. Please compile with htslib feature flag enabled to process HTSlib files");
@@ -79,32 +49,38 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
 
         #[cfg(feature = "htslib")]
         {
-            trace!("launching single encoding (htslib)");
+            let (kind, context) = if interleaved {
+                ("interleaved", "Must provide an input path for HTSLib")
+            } else {
+                ("single", "Must provide an input path for HTSlib")
+            };
+            trace!("launching {kind} encoding (htslib)");
             encode_htslib(
-                args.input
-                    .single_path()?
-                    .context("Must provide an input path for HTSlib")?,
+                args.input.single_path()?.context(context)?,
                 opath.as_deref(),
-                args.output.mode()?,
-                args.output.options.into(),
-                false,
+                mode?,
+                config,
+                interleaved,
             )
         }
     } else {
-        trace!("launching single encoding (fastx)");
-        encode_collection(
-            args.input.build_single_collection()?,
-            opath.as_deref(),
-            args.output.mode()?,
-            args.output.options.into(),
-        )
+        let collection = if paired {
+            trace!("launching paired encoding");
+            args.input.build_paired_collection()?
+        } else if interleaved {
+            trace!("launching interleaved encoding (fastx)");
+            args.input.build_interleaved_collection()?
+        } else {
+            trace!("launching single encoding (fastx)");
+            args.input.build_single_collection()?
+        };
+        encode_collection(collection, opath.as_deref(), mode?, config)
     }?;
 
-    if let Some(opath) = opath {
-        info!("Wrote {num_records} records to: {opath}");
-    } else {
-        info!("Wrote {num_records} records to: stdout");
-    }
+    info!(
+        "Wrote {num_records} records to: {}",
+        opath.as_deref().unwrap_or("stdout")
+    );
     if num_skipped > 0 {
         info!("Skipped {num_skipped} records");
     }
