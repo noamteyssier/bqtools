@@ -1,138 +1,14 @@
-use std::sync::Arc;
-
-use crate::cli::{FileFormat, Mate, SampleCommand};
+use crate::cli::SampleCommand;
 use anyhow::Result;
-use binseq::prelude::*;
-use rand::{RngExt, SeedableRng};
-use std::sync::Mutex;
 
-use super::decode::{build_writer, fill_qual, write_record_pair, SplitWriter};
-
-#[derive(Clone)]
-struct SampleProcessor {
-    /// Sampling Options
-    fraction: f64,
-    seed: u64,
-
-    /// Local write buffers
-    mixed: Vec<u8>, // General purpose, interleaved or singlets
-    left: Vec<u8>, // Used when writing pairs of files (R1/R2)
-    right: Vec<u8>,
-
-    /// Quality buffers
-    squal: Vec<u8>,
-    xqual: Vec<u8>,
-
-    /// Write Options
-    format: FileFormat,
-    mate: Mate,
-    is_split: bool,
-
-    /// Global values
-    global_writer: Arc<Mutex<SplitWriter>>,
-}
-impl SampleProcessor {
-    pub fn new(
-        fraction: f64,
-        seed: u64,
-        writer: SplitWriter,
-        format: FileFormat,
-        mate: Mate,
-    ) -> Self {
-        Self {
-            fraction,
-            format,
-            mate,
-            seed,
-            mixed: Vec::new(),
-            left: Vec::new(),
-            right: Vec::new(),
-            squal: Vec::new(),
-            xqual: Vec::new(),
-            is_split: writer.is_split(),
-            global_writer: Arc::new(Mutex::new(writer)),
-        }
-    }
-    /// Keep/drop is a pure function of `(seed, record index)`, so the sample is
-    /// reproducible regardless of thread count or batch boundaries.
-    pub fn include_record(&self, index: u64) -> bool {
-        rand::rngs::SmallRng::seed_from_u64(self.seed.wrapping_add(index))
-            .random_bool(self.fraction)
-    }
-}
-impl ParallelProcessor for SampleProcessor {
-    fn process_record<B: BinseqRecord>(&mut self, record: B) -> binseq::Result<()> {
-        let sbuf = record.sseq();
-        let xbuf = record.xseq();
-
-        if self.include_record(record.index()) {
-            let squal = if record.has_quality() {
-                record.squal()
-            } else {
-                fill_qual(&mut self.squal, sbuf.len())
-            };
-
-            let xqual = if record.is_paired() && record.has_quality() {
-                record.xqual()
-            } else {
-                fill_qual(&mut self.xqual, xbuf.len())
-            };
-
-            write_record_pair(
-                &mut self.left,
-                &mut self.right,
-                &mut self.mixed,
-                self.mate,
-                self.is_split,
-                sbuf,
-                squal,
-                record.sheader(),
-                xbuf,
-                xqual,
-                record.xheader(),
-                self.format,
-            )?;
-        }
-
-        Ok(())
-    }
-
-    fn on_batch_complete(&mut self) -> binseq::Result<()> {
-        // Lock the mutex to write to the global buffer
-        {
-            let mut writer = self.global_writer.lock().unwrap();
-            writer.write_batch(&self.left, &self.right, &self.mixed)?;
-        }
-
-        // Clear the local buffer and reset the local record count
-        self.mixed.clear();
-        self.left.clear();
-        self.right.clear();
-        Ok(())
-    }
-}
+use super::decode::run_with;
 
 pub fn run(args: &SampleCommand) -> Result<()> {
-    args.sample.validate()?;
-    let reader = BinseqReader::new(args.input.path())?;
-    let format = args.output.format()?;
-    let writer = build_writer(&args.output, format, reader.is_paired())?;
-    let mate = if reader.is_paired() {
-        args.output.mate
-    } else {
-        Mate::One
-    };
-    let proc = SampleProcessor::new(args.sample.fraction, args.sample.seed, writer, format, mate);
-    if let Some(span) = args.input.span {
-        let num_records = reader.num_records()?;
-        reader.process_parallel_range(
-            proc.clone(),
-            args.output.threads(),
-            span.get_range(num_records)?,
-        )?;
-    } else {
-        reader.process_parallel(proc.clone(), args.output.threads())?;
-    }
+    run_with(
+        &args.input,
+        &args.output,
+        Some((args.sample.fraction, args.sample.seed)),
+    )?;
     Ok(())
 }
 

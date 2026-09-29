@@ -1,8 +1,8 @@
 mod decode_binseq;
 mod utils;
 
-use crate::cli::{DecodeCommand, FileFormat, Mate, OutputFile};
-use decode_binseq::Decoder;
+use crate::cli::{DecodeCommand, FileFormat, InputBinseq, Mate, OutputFile};
+pub use decode_binseq::Decoder;
 pub use utils::{fill_qual, write_record, write_record_pair, SplitWriter};
 
 use anyhow::{bail, Result};
@@ -35,28 +35,32 @@ pub fn build_writer(args: &OutputFile, format: FileFormat, paired: bool) -> Resu
     }
 }
 
-pub fn run(args: &DecodeCommand) -> Result<()> {
-    let reader = BinseqReader::new(args.input.path())?;
-    let format = args.output.format()?;
-    let writer = build_writer(&args.output, format, reader.is_paired())?;
+/// Decode records to the output, optionally keeping only a `(fraction, seed)` sample.
+pub fn run_with(
+    input: &InputBinseq,
+    output: &OutputFile,
+    sample: Option<(f64, u64)>,
+) -> Result<Decoder> {
+    let reader = BinseqReader::new(input.path())?;
+    let format = output.format()?;
+    let writer = build_writer(output, format, reader.is_paired())?;
     let mate = if reader.is_paired() {
-        args.output.mate
+        output.mate
     } else {
         Mate::One
     };
-    let proc = Decoder::new(writer, format, mate);
-    if let Some(span) = args.input.span {
-        let num_records = reader.num_records()?;
-        reader.process_parallel_range(
-            proc.clone(),
-            args.output.threads(),
-            span.get_range(num_records)?,
-        )?;
-    } else {
-        reader.process_parallel(proc.clone(), args.output.threads())?;
-    }
-    let num_records = proc.num_records();
-    info!("Processed {num_records} records...");
+    let proc = Decoder::new(writer, format, mate, sample);
+    let range = match input.span {
+        Some(span) => span.get_range(reader.num_records()?)?,
+        None => 0..reader.num_records()?,
+    };
+    reader.process_parallel_range(proc.clone(), output.threads(), range)?;
+    Ok(proc)
+}
+
+pub fn run(args: &DecodeCommand) -> Result<()> {
+    let proc = run_with(&args.input, &args.output, None)?;
+    info!("Processed {} records...", proc.num_records());
     Ok(())
 }
 

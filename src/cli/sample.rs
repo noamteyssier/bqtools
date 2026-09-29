@@ -1,4 +1,3 @@
-use anyhow::Result;
 use clap::Parser;
 
 use super::{InputBinseq, OutputFile};
@@ -26,7 +25,7 @@ pub struct SampleArgs {
     ///
     /// Each record is kept independently with this probability, so the output
     /// count is approximate. Applied within `--span` when given.
-    #[clap(short = 'F', long)]
+    #[clap(short = 'F', long, value_parser = parse_fraction)]
     pub fraction: f64,
 
     /// Seed for random sampling
@@ -35,11 +34,11 @@ pub struct SampleArgs {
     #[clap(short = 'S', long, default_value = "42")]
     pub seed: u64,
 }
-impl SampleArgs {
-    pub fn validate(&self) -> Result<()> {
-        if self.fraction <= 0.0 || self.fraction > 1.0 {
-            anyhow::bail!("Fraction must be between 0 and 1");
-        }
-        Ok(())
+
+fn parse_fraction(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(f) if f > 0.0 && f <= 1.0 => Ok(f),
+        Ok(_) => Err("Fraction must be between 0 and 1".into()),
+        Err(e) => Err(e.to_string()),
     }
 }
