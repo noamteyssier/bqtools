@@ -73,18 +73,8 @@ mod tests {
 
     use crate::cli::{BinseqMode, FileFormat};
     use crate::testutils::{
-        count_binseq, count_fastx_records, write_fastx, Compression, DEFAULT_NUM_RECORDS,
+        count_binseq, count_fastx_records, encode, write_fastx, Compression, DEFAULT_NUM_RECORDS,
     };
-
-    fn encode(in_path: &std::path::Path, out_path: &std::path::Path) -> Result<()> {
-        let cmd = crate::cli::EncodeCommand::try_parse_from([
-            "encode",
-            in_path.to_str().unwrap(),
-            "-o",
-            out_path.to_str().unwrap(),
-        ])?;
-        crate::commands::encode::run(&cmd)
-    }
 
     fn decode(bq_path: &std::path::Path, out_path: &std::path::Path, extra: &[&str]) -> Result<()> {
         let cmd = crate::cli::DecodeCommand::try_parse_from(

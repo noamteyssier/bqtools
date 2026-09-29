@@ -20,23 +20,14 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use crate::cli::{BinseqMode, FileFormat};
-    use crate::testutils::{count_fastx_records, write_fastx};
-
-    fn encode(in_path: &std::path::Path, out_path: &std::path::Path) -> Result<()> {
-        let cmd = crate::cli::EncodeCommand::try_parse_from([
-            "encode",
-            in_path.to_str().unwrap(),
-            "-o",
-            out_path.to_str().unwrap(),
-        ])?;
-        crate::commands::encode::run(&cmd)
-    }
+    use crate::testutils::{count_fastx_records, encode, write_fastx};
 
     fn sample(
         bq_path: &std::path::Path,
         out_path: &std::path::Path,
         fraction: f64,
         seed: u64,
+        threads: u32,
     ) -> Result<()> {
         let cmd = crate::cli::SampleCommand::try_parse_from([
             "sample",
@@ -45,6 +36,8 @@ mod tests {
             &fraction.to_string(),
             "-S",
             &seed.to_string(),
+            "-T",
+            &threads.to_string(),
             "-o",
             out_path.to_str().unwrap(),
         ])?;
@@ -66,7 +59,7 @@ mod tests {
             encode(in_tmp.path(), bq_tmp.path())?;
 
             let out_tmp = NamedTempFile::with_suffix(fmt.fastx_suffix())?;
-            sample(bq_tmp.path(), out_tmp.path(), fraction, 42)?;
+            sample(bq_tmp.path(), out_tmp.path(), fraction, 42, 1)?;
 
             let count = count_fastx_records(out_tmp.path())?;
             assert!(
@@ -87,7 +80,7 @@ mod tests {
             encode(in_tmp.path(), bq_tmp.path())?;
 
             let out_tmp = NamedTempFile::with_suffix(".fastq")?;
-            sample(bq_tmp.path(), out_tmp.path(), 1.0, 42)?;
+            sample(bq_tmp.path(), out_tmp.path(), 1.0, 42, 1)?;
 
             assert_eq!(
                 count_fastx_records(out_tmp.path())?,
@@ -118,21 +111,9 @@ mod tests {
         encode(in_tmp.path(), bq_tmp.path())?;
 
         let mut results = Vec::new();
-        for threads in ["1", "4"] {
+        for threads in [1, 4] {
             let out_tmp = NamedTempFile::with_suffix(".fastq")?;
-            let cmd = crate::cli::SampleCommand::try_parse_from([
-                "sample",
-                bq_tmp.path().to_str().unwrap(),
-                "-F",
-                "0.3",
-                "-S",
-                "7",
-                "-T",
-                threads,
-                "-o",
-                out_tmp.path().to_str().unwrap(),
-            ])?;
-            super::run(&cmd)?;
+            sample(bq_tmp.path(), out_tmp.path(), 0.3, 7, threads)?;
             results.push(sorted_seqs(out_tmp.path())?);
         }
         assert_eq!(results[0], results[1]);
@@ -151,7 +132,7 @@ mod tests {
             .iter()
             .map(|&seed| {
                 let out_tmp = NamedTempFile::with_suffix(".fastq")?;
-                sample(bq_tmp.path(), out_tmp.path(), 0.5, seed)?;
+                sample(bq_tmp.path(), out_tmp.path(), 0.5, seed, 1)?;
                 count_fastx_records(out_tmp.path())
             })
             .collect::<Result<_>>()?;
