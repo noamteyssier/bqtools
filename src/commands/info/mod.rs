@@ -25,20 +25,16 @@ struct BqInfo {
 impl BqInfo {
     fn new(path: String, reader: &bq::MmapReader, num_records: usize) -> Self {
         let header = reader.header();
-        let bitsize: u8 = header.bits.into();
+        let paired = header.xlen > 0;
         Self {
             path,
             format: "BQ",
             version: header.format,
-            bitsize,
-            paired: header.xlen > 0,
+            bitsize: header.bits.into(),
+            paired,
             flags: header.flags,
             sequence_length: header.slen,
-            extended_length: if header.xlen > 0 {
-                Some(header.xlen)
-            } else {
-                None
-            },
+            extended_length: paired.then_some(header.xlen),
             num_records,
         }
     }
@@ -58,10 +54,6 @@ impl BqInfo {
             "Number of records   : {}",
             self.num_records.separate_with_underscores()
         );
-    }
-
-    fn num_records(&self) {
-        println!("{}\t{}", self.num_records, self.path);
     }
 }
 
@@ -87,12 +79,11 @@ impl VbqInfo {
     fn new(path: String, reader: &vbq::MmapReader, num_records: usize) -> Result<Self> {
         let header = reader.header();
         let index = reader.load_index()?;
-        let bitsize: u8 = header.bits.into();
         Ok(Self {
             path,
             format: "VBQ",
             version: header.format,
-            bitsize,
+            bitsize: header.bits.into(),
             paired: header.paired,
             quality: header.qual,
             headers: header.headers,
@@ -105,30 +96,22 @@ impl VbqInfo {
     }
 
     fn tabular(&self) {
-        println!("-------------------------------");
-        println!("             File              ");
-        println!("-------------------------------");
+        section("             File              ");
         println!("Path                : {}", self.path);
         println!("Format              : {}", self.format);
         println!("Version             : {}", self.version);
-        println!("-------------------------------");
-        println!("           Metadata            ");
-        println!("-------------------------------");
+        section("           Metadata            ");
         println!("Bits per Nucleotide : {}", self.bitsize);
         println!("Paired              : {}", self.paired);
         println!("Quality             : {}", self.quality);
         println!("Headers             : {}", self.headers);
         println!("Flags               : {}", self.flags);
-        println!("-------------------------------");
-        println!("          Compression          ");
-        println!("-------------------------------");
+        section("          Compression          ");
         println!(
             "Virtual Block Size  : {}",
             pprint_block_size(self.block_size as f64)
         );
-        println!("-------------------------------");
-        println!("            Data               ");
-        println!("-------------------------------");
+        section("            Data               ");
         println!("Number of blocks    : {}", self.n_blocks);
         println!(
             "Number of records   : {}",
@@ -138,10 +121,6 @@ impl VbqInfo {
 
     fn print_index(&self) {
         self.block_index.pprint();
-    }
-
-    fn num_records(&self) {
-        println!("{}\t{}", self.num_records, self.path);
     }
 }
 
@@ -167,7 +146,6 @@ impl CbqInfo {
     fn new(path: String, reader: &cbq::MmapReader, num_records: usize) -> Self {
         let header = reader.header();
         let index = reader.index().to_owned();
-        let avg_block_size = reader.index().average_block_size();
         Self {
             path,
             format: "CBQ",
@@ -178,7 +156,7 @@ impl CbqInfo {
             flags: header.has_flags(),
             compression_level: header.compression_level,
             block_size: header.block_size,
-            mean_block_size: avg_block_size,
+            mean_block_size: index.average_block_size(),
             num_blocks: index.num_blocks(),
             num_records,
             index,
@@ -186,22 +164,16 @@ impl CbqInfo {
     }
 
     fn tabular(&self) {
-        println!("-------------------------------");
-        println!("             File              ");
-        println!("-------------------------------");
+        section("             File              ");
         println!("Path                : {}", self.path);
-        println!("Format              : CBQ");
+        println!("Format              : {}", self.format);
         println!("Version             : {}", self.version);
-        println!("-------------------------------");
-        println!("           Metadata            ");
-        println!("-------------------------------");
+        section("           Metadata            ");
         println!("Paired              : {}", self.paired);
         println!("Quality             : {}", self.quality);
         println!("Headers             : {}", self.headers);
         println!("Flags               : {}", self.flags);
-        println!("-------------------------------");
-        println!("          Compression          ");
-        println!("-------------------------------");
+        section("          Compression          ");
         println!("Compression Level   : {}", self.compression_level);
         println!(
             "Virtual Block Size  : {}",
@@ -211,9 +183,7 @@ impl CbqInfo {
             "Mean Block Size     : {}",
             pprint_block_size(self.mean_block_size)
         );
-        println!("-------------------------------");
-        println!("            Data               ");
-        println!("-------------------------------");
+        section("            Data               ");
         println!("Number of blocks    : {}", self.num_blocks);
         println!(
             "Number of records   : {}",
@@ -223,10 +193,6 @@ impl CbqInfo {
 
     fn print_index(&self) {
         self.index.pprint();
-    }
-
-    fn num_records(&self) {
-        println!("{}\t{}", self.num_records, self.path);
     }
 }
 
@@ -267,14 +233,6 @@ impl BinseqInfo {
         }
     }
 
-    pub fn num_records(&self) {
-        match self {
-            BinseqInfo::Bq(bq) => bq.num_records(),
-            BinseqInfo::Vbq(vbq) => vbq.num_records(),
-            BinseqInfo::Cbq(cbq) => cbq.num_records(),
-        }
-    }
-
     pub fn print_index(&self) {
         match self {
             BinseqInfo::Bq(bq) => {
@@ -286,15 +244,17 @@ impl BinseqInfo {
     }
 }
 
-fn pprint_block_size<T>(block_size: T) -> String
-where
-    T: Into<f64> + Copy,
-{
+fn section(title: &str) {
+    println!("-------------------------------");
+    println!("{title}");
+    println!("-------------------------------");
+}
+
+fn pprint_block_size(block_size: f64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * KB;
     const GB: f64 = MB * KB;
 
-    let block_size = block_size.into();
     if block_size < KB {
         format!("{block_size} bytes")
     } else if block_size < MB {
@@ -335,6 +295,24 @@ pub fn run(args: &InfoCommand) -> Result<()> {
         return Ok(());
     }
 
+    // record counts only: skip building the full info (index loading)
+    if args.opts.num {
+        let mut num_ok = 0;
+        for path in &args.input {
+            match BinseqReader::new(path.as_str()).and_then(|r| r.num_records()) {
+                Ok(n) => {
+                    num_ok += 1;
+                    println!("{n}\t{path}");
+                }
+                Err(e) => warn!("Unable to read path: {path} - {e}"),
+            }
+        }
+        if num_ok == 0 {
+            bail!("No input could be read as a BINSEQ file");
+        }
+        return Ok(());
+    }
+
     // all other cases
     let all_info: Vec<BinseqInfo> = args
         .input
@@ -352,10 +330,6 @@ pub fn run(args: &InfoCommand) -> Result<()> {
     }
     if args.opts.json {
         println!("{}", serde_json::to_string_pretty(&all_info)?);
-    } else if args.opts.num {
-        for info in all_info {
-            info.num_records();
-        }
     } else if args.opts.show_index {
         for info in all_info {
             info.print_index();
