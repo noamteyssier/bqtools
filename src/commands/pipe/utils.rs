@@ -1,6 +1,4 @@
 use nix::errno::Errno;
-use std::fs::File;
-use std::io::BufWriter;
 use std::path::Path;
 
 use anyhow::Result;
@@ -10,7 +8,6 @@ use nix::unistd;
 
 use super::{PairedChannels, RecordPair};
 use crate::cli::FileFormat;
-use crate::types::BoxedWriter;
 
 /// The record pairs that get a FIFO and writer thread.
 pub fn pairs(paired: bool, channels: PairedChannels) -> &'static [RecordPair] {
@@ -60,13 +57,6 @@ pub fn create_fifo(path: &str) -> Result<()> {
         }
         Err(err) => Err(err.into()),
     }
-}
-
-/// Open a FIFO for writing
-pub fn open_fifo(path: &str) -> Result<BoxedWriter> {
-    let handle = File::options().write(true).open(path).map(BufWriter::new)?;
-    trace!("Opened writer at FIFO path: {path}");
-    Ok(Box::new(handle))
 }
 
 /// RAII guard that unlinks a set of FIFOs when dropped.
