@@ -2,6 +2,7 @@ mod processor;
 
 use anyhow::{bail, Result};
 use binseq::{BinseqReader, ParallelReader};
+use clap::ValueEnum;
 use log::warn;
 use serde::Serialize;
 
@@ -41,39 +42,21 @@ fn field_mask(opts: &VerifyOptions) -> Result<FieldMask> {
     Ok(fields)
 }
 
-fn mate_label(mate: Mate) -> &'static str {
-    match mate {
-        Mate::One => "1",
-        Mate::Two => "2",
-        Mate::Both => "both",
-    }
-}
-
-fn field_labels(fields: FieldMask) -> Vec<&'static str> {
-    let mut labels = Vec::new();
-    if fields.seq {
-        labels.push("seq");
-    }
-    if fields.qual {
-        labels.push("qual");
-    }
-    if fields.headers {
-        labels.push("headers");
-    }
-    if fields.flags {
-        labels.push("flags");
-    }
-    labels
-}
-
-struct VerifyResult {
-    fields: FieldMask,
-    checksum: u64,
-    num_records: usize,
+fn field_labels(f: FieldMask) -> Vec<&'static str> {
+    [
+        ("seq", f.seq),
+        ("qual", f.qual),
+        ("headers", f.headers),
+        ("flags", f.flags),
+    ]
+    .into_iter()
+    .filter(|&(_, on)| on)
+    .map(|(name, _)| name)
+    .collect()
 }
 
 /// Runs the checksum computation without printing, so it can be reused by tests.
-fn compute(args: &VerifyCommand) -> Result<VerifyResult> {
+fn compute(args: &VerifyCommand) -> Result<VerifyReport> {
     let mut fields = field_mask(&args.opts)?;
 
     let reader = BinseqReader::new(args.input.path())?;
@@ -114,10 +97,19 @@ fn compute(args: &VerifyCommand) -> Result<VerifyResult> {
         reader.process_parallel(processor.clone(), args.opts.threads)?;
     }
 
-    Ok(VerifyResult {
-        fields,
-        checksum: processor.checksum(),
+    Ok(VerifyReport {
+        path: args.input.path().to_string(),
+        algorithm: "xxh3-64/wrapping-sum",
+        fields: field_labels(fields),
+        mate: args
+            .opts
+            .mate
+            .to_possible_value()
+            .unwrap()
+            .get_name()
+            .to_string(),
         num_records: processor.num_records(),
+        checksum: format!("{:016x}", processor.checksum()),
     })
 }
 
@@ -126,30 +118,20 @@ struct VerifyReport {
     path: String,
     algorithm: &'static str,
     fields: Vec<&'static str>,
-    mate: &'static str,
+    mate: String,
     num_records: usize,
     checksum: String,
 }
 
 pub fn run(args: &VerifyCommand) -> Result<()> {
-    let result = compute(args)?;
+    let report = compute(args)?;
 
     if args.opts.json {
-        let report = VerifyReport {
-            path: args.input.path().to_string(),
-            algorithm: "xxh3-64/wrapping-sum",
-            fields: field_labels(result.fields),
-            mate: mate_label(args.opts.mate),
-            num_records: result.num_records,
-            checksum: format!("{:016x}", result.checksum),
-        };
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!(
-            "{:016x}\t{}\t{}",
-            result.checksum,
-            result.num_records,
-            args.input.path()
+            "{}\t{}\t{}",
+            report.checksum, report.num_records, report.path
         );
     }
 
@@ -166,24 +148,17 @@ mod tests {
     use crate::cli::BinseqMode;
     use crate::testutils::write_fastx;
 
-    fn encode(in_path: &std::path::Path, out_path: &std::path::Path) -> Result<()> {
-        let cmd = crate::cli::EncodeCommand::try_parse_from([
-            "encode",
-            in_path.to_str().unwrap(),
-            "-o",
-            out_path.to_str().unwrap(),
-        ])?;
-        crate::commands::encode::run(&cmd)
-    }
-
-    fn encode_without_headers(in_path: &std::path::Path, out_path: &std::path::Path) -> Result<()> {
-        let cmd = crate::cli::EncodeCommand::try_parse_from([
-            "encode",
-            in_path.to_str().unwrap(),
-            "-o",
-            out_path.to_str().unwrap(),
-            "--skip-headers",
-        ])?;
+    fn encode(in_path: &std::path::Path, out_path: &std::path::Path, extra: &[&str]) -> Result<()> {
+        let cmd = crate::cli::EncodeCommand::try_parse_from(
+            [
+                "encode",
+                in_path.to_str().unwrap(),
+                "-o",
+                out_path.to_str().unwrap(),
+            ]
+            .into_iter()
+            .chain(extra.iter().copied()),
+        )?;
         crate::commands::encode::run(&cmd)
     }
 
@@ -191,7 +166,7 @@ mod tests {
         let mut cmd_args = vec!["verify".to_string(), path.to_str().unwrap().to_string()];
         cmd_args.extend(extra.iter().map(std::string::ToString::to_string));
         let cmd = crate::cli::VerifyCommand::try_parse_from(cmd_args)?;
-        Ok(super::compute(&cmd)?.checksum)
+        Ok(u64::from_str_radix(&super::compute(&cmd)?.checksum, 16)?)
     }
 
     /// Re-encoding the same input twice (independent parallel runs, so record
@@ -203,9 +178,9 @@ mod tests {
             let in_tmp = write_fastx().call()?;
 
             let bq_a = NamedTempFile::with_suffix(mode.extension())?;
-            encode(in_tmp.path(), bq_a.path())?;
+            encode(in_tmp.path(), bq_a.path(), &[])?;
             let bq_b = NamedTempFile::with_suffix(mode.extension())?;
-            encode(in_tmp.path(), bq_b.path())?;
+            encode(in_tmp.path(), bq_b.path(), &[])?;
 
             let checksum_a = checksum(bq_a.path(), &[])?;
             let checksum_b = checksum(bq_b.path(), &[])?;
@@ -223,7 +198,7 @@ mod tests {
     fn test_verify_detects_content_change() -> Result<()> {
         let in_tmp = write_fastx().call()?;
         let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
-        encode(in_tmp.path(), bq_tmp.path())?;
+        encode(in_tmp.path(), bq_tmp.path(), &[])?;
         let original = checksum(bq_tmp.path(), &[])?;
 
         let mut bytes = std::fs::read(bq_tmp.path())?;
@@ -242,7 +217,7 @@ mod tests {
     fn test_verify_skip_flags_change_checksum() -> Result<()> {
         let in_tmp = write_fastx().call()?;
         let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
-        encode(in_tmp.path(), bq_tmp.path())?;
+        encode(in_tmp.path(), bq_tmp.path(), &[])?;
 
         let full = checksum(bq_tmp.path(), &[])?;
         let skip_headers = checksum(bq_tmp.path(), &["--skip-headers"])?;
@@ -261,7 +236,7 @@ mod tests {
     fn test_verify_skip_flags_is_noop_without_flag_data() -> Result<()> {
         let in_tmp = write_fastx().call()?;
         let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
-        encode(in_tmp.path(), bq_tmp.path())?;
+        encode(in_tmp.path(), bq_tmp.path(), &[])?;
 
         let full = checksum(bq_tmp.path(), &[])?;
         let skip_flags = checksum(bq_tmp.path(), &["--skip-flags"])?;
@@ -276,7 +251,7 @@ mod tests {
     fn test_verify_skip_headers_is_noop_without_header_data() -> Result<()> {
         let in_tmp = write_fastx().call()?;
         let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
-        encode_without_headers(in_tmp.path(), bq_tmp.path())?;
+        encode(in_tmp.path(), bq_tmp.path(), &["--skip-headers"])?;
 
         let full = checksum(bq_tmp.path(), &[])?;
         let skip_headers = checksum(bq_tmp.path(), &["--skip-headers"])?;
@@ -302,9 +277,9 @@ mod tests {
             let in_tmp = write_fastx().nrec(20_000).include_n(false).call()?;
 
             let bq_a = NamedTempFile::with_suffix(mode.extension())?;
-            encode_without_headers(in_tmp.path(), bq_a.path())?;
+            encode(in_tmp.path(), bq_a.path(), &["--skip-headers"])?;
             let bq_b = NamedTempFile::with_suffix(mode.extension())?;
-            encode_without_headers(in_tmp.path(), bq_b.path())?;
+            encode(in_tmp.path(), bq_b.path(), &["--skip-headers"])?;
 
             let checksum_a = checksum(bq_a.path(), &[])?;
             let checksum_b = checksum(bq_b.path(), &[])?;
@@ -325,7 +300,7 @@ mod tests {
 
         let in_tmp = write_fastx().format(FileFormat::Fasta).call()?;
         let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
-        encode_without_headers(in_tmp.path(), bq_tmp.path())?;
+        encode(in_tmp.path(), bq_tmp.path(), &["--skip-headers"])?;
 
         let err = checksum(
             bq_tmp.path(),
@@ -386,7 +361,7 @@ mod tests {
     fn test_verify_rejects_mate_two_on_single_channel_file() -> Result<()> {
         let in_tmp = write_fastx().call()?;
         let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
-        encode(in_tmp.path(), bq_tmp.path())?;
+        encode(in_tmp.path(), bq_tmp.path(), &[])?;
 
         let err = checksum(bq_tmp.path(), &["-M", "2"]).unwrap_err();
         assert!(err.to_string().contains("--mate/-M 2"));
@@ -402,7 +377,7 @@ mod tests {
         for (mode, json_flag) in iproduct!(BinseqMode::enum_iter(), [&[][..], &["--json"]]) {
             let in_tmp = write_fastx().call()?;
             let bq_tmp = NamedTempFile::with_suffix(mode.extension())?;
-            encode(in_tmp.path(), bq_tmp.path())?;
+            encode(in_tmp.path(), bq_tmp.path(), &[])?;
 
             let mut args = vec![
                 "verify".to_string(),
