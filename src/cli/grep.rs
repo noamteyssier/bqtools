@@ -8,7 +8,7 @@ use clap::Parser;
 use log::trace;
 use paraseq::{fasta, ReaderBuilder, Record};
 
-use crate::commands::grep::{Pattern, PatternCollection, SimpleRange};
+use crate::commands::grep::{Pattern, PatternCollection, PatternSets, SimpleRange};
 
 use super::{InputBinseq, OutputFile};
 
@@ -409,9 +409,7 @@ impl PatternFileArgs {
         Self::load_patterns(path)
     }
 
-    pub fn load_all_patterns(
-        &self,
-    ) -> Result<(PatternCollection, PatternCollection, PatternCollection)> {
+    pub fn load_all_patterns(&self) -> Result<PatternSets> {
         let pat1 = if let Some(ref path) = self.sfile {
             Self::load_patterns(path)?
         } else {
@@ -427,11 +425,11 @@ impl PatternFileArgs {
         } else {
             Vec::default()
         };
-        Ok((
-            PatternCollection(pat1),
-            PatternCollection(pat2),
-            PatternCollection(pat),
-        ))
+        Ok(PatternSets {
+            pat1: PatternCollection(pat1),
+            pat2: PatternCollection(pat2),
+            pat: PatternCollection(pat),
+        })
     }
 }
 

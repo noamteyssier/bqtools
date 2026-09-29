@@ -1,4 +1,7 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
+use log::{debug, error};
+
+use crate::cli::Mate;
 
 /// Returns true if the pattern is a fixed DNA string (only ACGT).
 pub(crate) fn is_fixed(pattern: &[u8]) -> bool {
@@ -47,7 +50,7 @@ impl Pattern {
 }
 
 /// A collection of patterns with convenience methods for type conversions.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PatternCollection(pub Vec<Pattern>);
 impl PatternCollection {
     pub fn bytes(&self) -> Vec<Vec<u8>> {
@@ -103,6 +106,62 @@ impl PatternCollection {
         self.0.clear();
     }
 }
+/// The primary-only, extended-only and either-sequence pattern sets.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PatternSets {
+    pub pat1: PatternCollection,
+    pub pat2: PatternCollection,
+    pub pat: PatternCollection,
+}
+impl PatternSets {
+    fn each_mut(&mut self) -> [&mut PatternCollection; 3] {
+        [&mut self.pat1, &mut self.pat2, &mut self.pat]
+    }
+
+    /// Total number of patterns across all three sets.
+    pub fn len(&self) -> usize {
+        self.pat1.len() + self.pat2.len() + self.pat.len()
+    }
+
+    /// Reverse complement every pattern; errors on any non-ACGT pattern.
+    pub fn reverse_complement(&mut self) -> Result<()> {
+        self.each_mut()
+            .into_iter()
+            .try_for_each(PatternCollection::reverse_complement)
+    }
+
+    /// Fixed-string (Aho-Corasick) matching applies when forced, or when every
+    /// pattern is a plain uppercase ACGT string.
+    pub fn use_fixed(&self, forced: bool) -> bool {
+        let fixed = forced
+            || [&self.pat1, &self.pat2, &self.pat]
+                .into_iter()
+                .flat_map(PatternCollection::iter)
+                .all(|p| is_fixed(&p.sequence));
+        if fixed && !forced {
+            debug!("All patterns are fixed strings — auto-selecting Aho-Corasick");
+        }
+        fixed
+    }
+
+    /// Applies `--mate`: restricts every pattern to the selected mate, so no
+    /// match can occur on an ignored mate.
+    pub fn redistribute(&mut self, mate: Mate) -> Result<()> {
+        let (keep, drop, n) = match mate {
+            Mate::Both => return Ok(()),
+            Mate::One => (&mut self.pat1, &mut self.pat2, 1),
+            Mate::Two => (&mut self.pat2, &mut self.pat1, 2),
+        };
+        drop.clear();
+        keep.ingest(&mut self.pat);
+        if keep.is_empty() {
+            error!("No patterns provided for mate {n}");
+            bail!("No patterns provided for mate {n}");
+        }
+        Ok(())
+    }
+}
+
 impl IntoIterator for PatternCollection {
     type Item = Pattern;
     type IntoIter = std::vec::IntoIter<Pattern>;
@@ -172,5 +231,90 @@ mod reverse_complement_tests {
     #[test]
     fn test_reverse_complement_rejects_empty() {
         assert!(pattern(b"").reverse_complement().is_err());
+    }
+}
+
+#[cfg(test)]
+mod pattern_sets_tests {
+    use super::{is_fixed, Mate, Pattern, PatternCollection, PatternSets};
+
+    fn pc(patterns: &[&[u8]]) -> PatternCollection {
+        PatternCollection(
+            patterns
+                .iter()
+                .map(|p| Pattern {
+                    name: None,
+                    sequence: p.to_vec(),
+                })
+                .collect(),
+        )
+    }
+
+    fn sets(pat1: &[&[u8]], pat2: &[&[u8]], pat: &[&[u8]]) -> PatternSets {
+        PatternSets {
+            pat1: pc(pat1),
+            pat2: pc(pat2),
+            pat: pc(pat),
+        }
+    }
+
+    #[test]
+    fn test_is_fixed() {
+        for p in [&b"ACGTACGT"[..], b"AAAAAAAAAA", b"ACGT"] {
+            assert!(is_fixed(p));
+        }
+        // empty, IUPAC, lowercase and regex syntax are not fixed
+        for p in [
+            &b""[..],
+            b"ACGTNRYW",
+            b"ACGN",
+            b"acgt",
+            b"AC.GT",
+            b"AC[GT]",
+            b"A{3}",
+            b"^ACGT",
+            b"ACG|TGA",
+            b"(ACG)",
+            b"AC\\dGT",
+        ] {
+            assert!(!is_fixed(p), "{}", String::from_utf8_lossy(p));
+        }
+    }
+
+    #[test]
+    fn test_use_fixed() {
+        assert!(sets(&[b"ACGT", b"TTTT"], &[b"GGGG"], &[]).use_fixed(false));
+        assert!(!sets(&[b"ACGT", b"AC.GT"], &[b"GGGG"], &[]).use_fixed(false));
+        assert!(sets(&[], &[], &[]).use_fixed(false));
+        // forcing wins over autodetection
+        assert!(sets(&[b"AC.GT"], &[], &[]).use_fixed(true));
+    }
+
+    #[test]
+    fn test_redistribution_noop() {
+        let mut s = sets(&[b"ACGT", b"TTTT"], &[b"GGGG"], &[b"AC.GT"]);
+        let before = s.clone();
+        s.redistribute(Mate::Both).unwrap();
+        assert_eq!(s, before);
+    }
+
+    #[test]
+    fn test_redistribution_m1() {
+        let mut s = sets(&[b"ACGT", b"TTTT"], &[b"GGGG"], &[b"AC.GT"]);
+        s.redistribute(Mate::One).unwrap();
+        assert_eq!(s, sets(&[b"ACGT", b"TTTT", b"AC.GT"], &[], &[]));
+    }
+
+    #[test]
+    fn test_redistribution_m2() {
+        let mut s = sets(&[b"ACGT", b"TTTT"], &[b"GGGG"], &[b"AC.GT"]);
+        s.redistribute(Mate::Two).unwrap();
+        assert_eq!(s, sets(&[], &[b"GGGG", b"AC.GT"], &[]));
+    }
+
+    #[test]
+    fn test_redistribution_errors_without_patterns() {
+        assert!(sets(&[], &[b"GGGG"], &[]).redistribute(Mate::One).is_err());
+        assert!(sets(&[b"GGGG"], &[], &[]).redistribute(Mate::Two).is_err());
     }
 }
