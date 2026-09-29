@@ -7,15 +7,11 @@ use std::{
 };
 
 use binseq::{BinseqWriter, SequencingRecord, SequencingRecordBuilder};
-use log::trace;
 use paraseq::{
     prelude::{PairedParallelProcessor, ParallelProcessor},
     IntoParaseqError,
 };
 use std::sync::Mutex;
-
-/// Default debug interval for logging progress (batches)
-const DEBUG_INTERVAL: usize = 1024;
 
 pub struct Encoder<W: Write + Send> {
     /// Thread-local writer for the encoder.
@@ -31,8 +27,6 @@ pub struct Encoder<W: Write + Send> {
     count: Arc<AtomicUsize>,
     /// Global skip count for the encoder.
     skip: Arc<AtomicUsize>,
-    /// Debug interval for logging progress
-    debug_interval: Arc<Mutex<usize>>,
 }
 impl<W: Write + Send> Clone for Encoder<W> {
     fn clone(&self) -> Self {
@@ -43,7 +37,6 @@ impl<W: Write + Send> Clone for Encoder<W> {
             writer: self.writer.clone(),
             count: self.count.clone(),
             skip: self.skip.clone(),
-            debug_interval: self.debug_interval.clone(),
         }
     }
 }
@@ -57,7 +50,6 @@ impl<W: Write + Send> Encoder<W> {
             t_skip: 0,
             count: Arc::new(AtomicUsize::new(0)),
             skip: Arc::new(AtomicUsize::new(0)),
-            debug_interval: Arc::new(Mutex::new(DEBUG_INTERVAL)),
         })
     }
 
@@ -74,16 +66,8 @@ impl<W: Write + Send> Encoder<W> {
     fn batch_complete(&mut self) -> binseq::Result<()> {
         self.count.fetch_add(self.t_count, Ordering::Relaxed);
         self.skip.fetch_add(self.t_skip, Ordering::Relaxed);
-        *self.debug_interval.lock().unwrap() += 1;
         self.t_count = 0;
         self.t_skip = 0;
-        if (*self.debug_interval.lock().unwrap()).is_multiple_of(DEBUG_INTERVAL) {
-            trace!(
-                "Processed {} records; skipped {}",
-                self.count.load(Ordering::Relaxed),
-                self.skip.load(Ordering::Relaxed)
-            );
-        }
         self.writer
             .lock()
             .unwrap()
