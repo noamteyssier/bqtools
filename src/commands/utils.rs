@@ -79,30 +79,18 @@ pub fn compress_passthrough(
 ) -> Result<Box<dyn Write + Send>> {
     match compression_type {
         CompressionType::Uncompressed => Ok(writer),
-        CompressionType::Gzip => compress_gzip_passthrough(writer, num_threads),
-        CompressionType::Zstd => compress_zstd_passthrough(writer, 3, num_threads),
+        CompressionType::Gzip => {
+            let encoder: ParCompress<Gzip, _> = ParCompressBuilder::new()
+                .num_threads(num_threads)?
+                .from_writer(writer);
+            Ok(Box::new(encoder))
+        }
+        CompressionType::Zstd => {
+            let mut encoder = zstd::Encoder::new(writer, 3)?;
+            encoder.multithread(num_threads as u32)?;
+            Ok(Box::new(encoder.auto_finish()))
+        }
     }
-}
-
-pub fn compress_gzip_passthrough(
-    writer: Box<dyn Write + Send>,
-    num_threads: usize,
-) -> Result<Box<dyn Write + Send>> {
-    let encoder: ParCompress<Gzip, _> = ParCompressBuilder::new()
-        .num_threads(num_threads)?
-        .from_writer(writer);
-    Ok(Box::new(encoder))
-}
-
-pub fn compress_zstd_passthrough(
-    writer: Box<dyn Write + Send>,
-    level: i32,
-    num_threads: usize,
-) -> Result<Box<dyn Write + Send>> {
-    let mut encoder = zstd::Encoder::new(writer, level)?;
-    encoder.multithread(num_threads as u32)?;
-    let encoder = encoder.auto_finish();
-    Ok(Box::new(encoder))
 }
 
 /// Default `max_n_frac` for fuzzy (sassy) matching: `k / pattern_length`.
