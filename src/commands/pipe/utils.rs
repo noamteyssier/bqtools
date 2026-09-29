@@ -8,8 +8,9 @@ use log::{trace, warn};
 use nix::sys::stat;
 use nix::unistd;
 
-use super::{BoxedWriter, PairedChannels, RecordPair};
+use super::{PairedChannels, RecordPair};
 use crate::cli::FileFormat;
+use crate::types::BoxedWriter;
 
 /// Creates many FIFOs (named-pipes) at the given basepath.
 ///
@@ -25,28 +26,20 @@ pub fn create_fifos(
     format: FileFormat,
     channels: PairedChannels,
 ) -> Result<Vec<String>> {
-    let mut fifo_paths = Vec::new();
-    if paired {
-        for idx in 0..num_threads {
-            if matches!(channels, PairedChannels::Both | PairedChannels::R1Only) {
-                let path = name_fifo(basepath, idx, RecordPair::R1, format);
-                create_fifo(&path)?;
-                fifo_paths.push(path);
-            }
-            if matches!(channels, PairedChannels::Both | PairedChannels::R2Only) {
-                let path = name_fifo(basepath, idx, RecordPair::R2, format);
-                create_fifo(&path)?;
-                fifo_paths.push(path);
-            }
-        }
-    } else {
-        for idx in 0..num_threads {
-            let path = name_fifo(basepath, idx, RecordPair::Unpaired, format);
+    let pairs: &[RecordPair] = match (paired, channels) {
+        (false, _) => &[RecordPair::Unpaired],
+        (true, PairedChannels::Both) => &[RecordPair::R1, RecordPair::R2],
+        (true, PairedChannels::R1Only) => &[RecordPair::R1],
+        (true, PairedChannels::R2Only) => &[RecordPair::R2],
+    };
+    (0..num_threads)
+        .flat_map(|idx| pairs.iter().map(move |&pair| (idx, pair)))
+        .map(|(idx, pair)| {
+            let path = name_fifo(basepath, idx, pair, format);
             create_fifo(&path)?;
-            fifo_paths.push(path);
-        }
-    }
-    Ok(fifo_paths)
+            Ok(path)
+        })
+        .collect()
 }
 
 /// Create a FIFO (named-pipe) at the given path

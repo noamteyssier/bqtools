@@ -34,19 +34,14 @@ pub fn make_directory<P: AsRef<Path>>(path: P) -> Result<()> {
 }
 
 pub fn match_output<P: AsRef<Path>>(path: Option<P>) -> Result<Box<dyn Write + Send>> {
-    if let Some(path) = path {
+    let inner: Box<dyn Write + Send> = if let Some(path) = path {
         trace!("Opening writer handle at: {}", path.as_ref().display());
-        let handle = File::create(path)?;
-        let buffer = BufWriter::new(handle);
-        let boxed = Box::new(buffer);
-        Ok(boxed)
+        Box::new(File::create(path)?)
     } else {
         trace!("Opening writer handle to stdout");
-        let handle = io::stdout();
-        let buffer = BufWriter::new(handle);
-        let boxed = Box::new(buffer);
-        Ok(boxed)
-    }
+        Box::new(io::stdout())
+    };
+    Ok(Box::new(BufWriter::new(inner)))
 }
 
 #[derive(Clone, Copy, Default, Debug, clap::ValueEnum)]
@@ -79,30 +74,18 @@ pub fn compress_passthrough(
 ) -> Result<Box<dyn Write + Send>> {
     match compression_type {
         CompressionType::Uncompressed => Ok(writer),
-        CompressionType::Gzip => compress_gzip_passthrough(writer, num_threads),
-        CompressionType::Zstd => compress_zstd_passthrough(writer, 3, num_threads),
+        CompressionType::Gzip => {
+            let encoder: ParCompress<Gzip, _> = ParCompressBuilder::new()
+                .num_threads(num_threads)?
+                .from_writer(writer);
+            Ok(Box::new(encoder))
+        }
+        CompressionType::Zstd => {
+            let mut encoder = zstd::Encoder::new(writer, 3)?;
+            encoder.multithread(num_threads as u32)?;
+            Ok(Box::new(encoder.auto_finish()))
+        }
     }
-}
-
-pub fn compress_gzip_passthrough(
-    writer: Box<dyn Write + Send>,
-    num_threads: usize,
-) -> Result<Box<dyn Write + Send>> {
-    let encoder: ParCompress<Gzip, _> = ParCompressBuilder::new()
-        .num_threads(num_threads)?
-        .from_writer(writer);
-    Ok(Box::new(encoder))
-}
-
-pub fn compress_zstd_passthrough(
-    writer: Box<dyn Write + Send>,
-    level: i32,
-    num_threads: usize,
-) -> Result<Box<dyn Write + Send>> {
-    let mut encoder = zstd::Encoder::new(writer, level)?;
-    encoder.multithread(num_threads as u32)?;
-    let encoder = encoder.auto_finish();
-    Ok(Box::new(encoder))
 }
 
 /// Default `max_n_frac` for fuzzy (sassy) matching: `k / pattern_length`.

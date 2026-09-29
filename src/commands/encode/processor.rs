@@ -6,7 +6,7 @@ use paraseq::{
     prelude::{PairedParallelProcessor, ParallelProcessor},
     IntoParaseqError,
 };
-use parking_lot::Mutex;
+use std::sync::Mutex;
 
 /// Default debug interval for logging progress (batches)
 const DEBUG_INTERVAL: usize = 1024;
@@ -56,19 +56,22 @@ impl<W: Write + Send> Encoder<W> {
     }
 
     fn write_batch(&mut self) -> binseq::Result<()> {
-        self.writer.lock().ingest_completed(&mut self.t_writer)
+        self.writer
+            .lock()
+            .unwrap()
+            .ingest_completed(&mut self.t_writer)
     }
 
     fn write_final(&mut self) -> binseq::Result<()> {
-        self.writer.lock().ingest(&mut self.t_writer)
+        self.writer.lock().unwrap().ingest(&mut self.t_writer)
     }
 
     fn update_global_counters(&mut self) {
         // update counts
         {
-            self.count.lock().add_assign(self.t_count);
-            self.skip.lock().add_assign(self.t_skip);
-            self.debug_interval.lock().add_assign(1);
+            self.count.lock().unwrap().add_assign(self.t_count);
+            self.skip.lock().unwrap().add_assign(self.t_skip);
+            self.debug_interval.lock().unwrap().add_assign(1);
         }
         // reset local
         {
@@ -77,26 +80,26 @@ impl<W: Write + Send> Encoder<W> {
         }
         // handle debug interval
         {
-            if (*self.debug_interval.lock()).is_multiple_of(DEBUG_INTERVAL) {
+            if (*self.debug_interval.lock().unwrap()).is_multiple_of(DEBUG_INTERVAL) {
                 trace!(
                     "Processed {} records; skipped {}",
-                    self.count.lock(),
-                    self.skip.lock()
+                    self.count.lock().unwrap(),
+                    self.skip.lock().unwrap()
                 );
             }
         }
     }
 
     pub fn finish(&mut self) -> binseq::Result<()> {
-        self.writer.lock().finish()
+        self.writer.lock().unwrap().finish()
     }
 
     pub fn get_global_record_count(&self) -> usize {
-        *self.count.lock()
+        *self.count.lock().unwrap()
     }
 
     pub fn get_global_skip_count(&self) -> usize {
-        *self.skip.lock()
+        *self.skip.lock().unwrap()
     }
 }
 

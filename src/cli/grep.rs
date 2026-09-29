@@ -458,7 +458,7 @@ impl ColorWhen {
             ColorWhen::Always => true,
             ColorWhen::Never => false,
             ColorWhen::Auto => {
-                use is_terminal::IsTerminal;
+                use std::io::IsTerminal;
                 std::io::stdout().is_terminal()
             }
         }

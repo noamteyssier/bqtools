@@ -1,7 +1,7 @@
 use std::{io::Write, sync::Arc};
 
 use binseq::{BinseqRecord, BinseqWriter, ParallelProcessor, SequencingRecordBuilder};
-use parking_lot::Mutex;
+use std::sync::Mutex;
 
 use crate::cli::Mate;
 
@@ -79,19 +79,22 @@ impl<W: Write + Send> RevCompProcessor<W> {
     }
 
     fn write_batch(&mut self) -> binseq::Result<()> {
-        self.writer.lock().ingest_completed(&mut self.t_writer)
+        self.writer
+            .lock()
+            .unwrap()
+            .ingest_completed(&mut self.t_writer)
     }
 
     fn write_final(&mut self) -> binseq::Result<()> {
-        self.writer.lock().ingest(&mut self.t_writer)
+        self.writer.lock().unwrap().ingest(&mut self.t_writer)
     }
 
     pub fn finish(&mut self) -> binseq::Result<()> {
-        self.writer.lock().finish()
+        self.writer.lock().unwrap().finish()
     }
 
     pub fn get_global_record_count(&self) -> usize {
-        *self.count.lock()
+        *self.count.lock().unwrap()
     }
 }
 
@@ -172,7 +175,7 @@ impl<W: Write + Send> ParallelProcessor for RevCompProcessor<W> {
     }
 
     fn on_batch_complete(&mut self) -> binseq::Result<()> {
-        *self.count.lock() += self.t_count;
+        *self.count.lock().unwrap() += self.t_count;
         self.t_count = 0;
         self.write_batch()
     }

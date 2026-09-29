@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{bail, Result};
 use binseq::{BinseqWriter, BinseqWriterBuilder, ParallelProcessor, SequencingRecordBuilder};
-use parking_lot::Mutex;
+use std::sync::Mutex;
 
 use crate::{
     cli::BinseqMode,
@@ -104,7 +104,9 @@ impl SplitProcessor {
     }
 
     pub fn finish(&mut self) -> binseq::Result<()> {
-        self.writer.iter().try_for_each(|w| w.lock().finish())
+        self.writer
+            .iter()
+            .try_for_each(|w| w.lock().unwrap().finish())
     }
 
     /// Removes any output files that received fewer than `min_records` records.
@@ -113,7 +115,11 @@ impl SplitProcessor {
     /// Returns the number of files removed.
     pub fn prune_below(&self, min_records: usize) -> Result<usize> {
         let mut removed = 0;
-        for (path, count) in self.paths.iter().zip(self.counts.iter().map(|c| *c.lock())) {
+        for (path, count) in self
+            .paths
+            .iter()
+            .zip(self.counts.iter().map(|c| *c.lock().unwrap()))
+        {
             if count < min_records {
                 log::debug!(
                     "Removing {} ({count} records, below threshold of {min_records})",
@@ -130,11 +136,16 @@ impl SplitProcessor {
         let mut handle = stderr();
         self.aliases
             .iter()
-            .zip(self.counts.iter().map(|x| *x.lock()))
+            .zip(self.counts.iter().map(|x| *x.lock().unwrap()))
             .try_for_each(|(alias, count)| writeln!(&mut handle, "{alias}\t{count}"))?;
         if self.write_undetermined {
             if let Some(count) = self.counts.last() {
-                writeln!(&mut handle, "{}\t{}", self.undetermined_name, *count.lock())?;
+                writeln!(
+                    &mut handle,
+                    "{}\t{}",
+                    self.undetermined_name,
+                    *count.lock().unwrap()
+                )?;
             }
         }
         handle.flush().map_err(Into::into)
@@ -193,7 +204,7 @@ impl ParallelProcessor for SplitProcessor {
         // ingest counts
         self.counts.iter().zip(self.t_counts.iter_mut()).for_each(
             |(global_counts, thread_counts)| {
-                *global_counts.lock() += *thread_counts;
+                *global_counts.lock().unwrap() += *thread_counts;
                 *thread_counts = 0;
             },
         );
@@ -203,7 +214,10 @@ impl ParallelProcessor for SplitProcessor {
             .iter()
             .zip(self.t_writer.iter_mut())
             .try_for_each(|(global_writer, thread_writer)| {
-                global_writer.lock().ingest_completed(thread_writer)
+                global_writer
+                    .lock()
+                    .unwrap()
+                    .ingest_completed(thread_writer)
             })
     }
 
@@ -213,7 +227,7 @@ impl ParallelProcessor for SplitProcessor {
             .iter()
             .zip(self.t_writer.iter_mut())
             .try_for_each(|(global_writer, thread_writer)| {
-                global_writer.lock().ingest(thread_writer)
+                global_writer.lock().unwrap().ingest(thread_writer)
             })
     }
 }

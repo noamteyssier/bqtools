@@ -3,7 +3,7 @@ use std::num::Wrapping;
 use std::sync::Arc;
 
 use binseq::{BinseqRecord, ParallelProcessor};
-use parking_lot::Mutex;
+use std::sync::Mutex;
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::cli::Mate;
@@ -127,11 +127,11 @@ impl VerifyProcessor {
     }
 
     pub fn checksum(&self) -> u64 {
-        self.checksum.lock().0
+        self.checksum.lock().unwrap().0
     }
 
     pub fn num_records(&self) -> usize {
-        *self.count.lock()
+        *self.count.lock().unwrap()
     }
 }
 
@@ -143,8 +143,8 @@ impl ParallelProcessor for VerifyProcessor {
     }
 
     fn on_batch_complete(&mut self) -> binseq::Result<()> {
-        *self.checksum.lock() += self.t_checksum;
-        *self.count.lock() += self.t_count;
+        *self.checksum.lock().unwrap() += self.t_checksum;
+        *self.count.lock().unwrap() += self.t_count;
         self.t_checksum = Wrapping(0);
         self.t_count = 0;
         Ok(())
