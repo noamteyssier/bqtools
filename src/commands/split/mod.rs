@@ -5,7 +5,7 @@ use binseq::{BinseqReader, ParallelReader};
 
 #[cfg(feature = "fuzzy")]
 use splitter::FuzzySplitter;
-use splitter::{AhoCorasickSplitter, RegexSplitter, SplitProcessor, Splitter};
+use splitter::{AhoCorasickSplitter, Matcher, RegexSplitter, SplitProcessor, Splitter};
 
 use crate::{
     cli::SplitCommand,
@@ -43,7 +43,7 @@ fn build_splitter(args: &SplitCommand) -> Result<Splitter> {
             args.fuzzy_args.distance,
             args.fuzzy_args.inexact,
         );
-        let splitter = FuzzySplitter::new(
+        let matcher = FuzzySplitter::new(
             &pat1,
             &pat2,
             &pat,
@@ -51,7 +51,12 @@ fn build_splitter(args: &SplitCommand) -> Result<Splitter> {
             args.fuzzy_args.inexact,
             args.fuzzy_args.max_n_frac,
         )?;
-        return Ok(Splitter::Fuzzy(Box::new(splitter)));
+        return Ok(Splitter::new(
+            Matcher::Fuzzy(Box::new(matcher)),
+            &pat1,
+            &pat2,
+            &pat,
+        ));
     }
 
     let use_fixed = args.split.fixed || all_patterns_fixed(&[&pat1, &pat2, &pat]);
@@ -64,12 +69,17 @@ fn build_splitter(args: &SplitCommand) -> Result<Splitter> {
             "Using Aho-Corasick splitter backend (dfa={})",
             !args.split.no_dfa,
         );
-        let splitter = AhoCorasickSplitter::new(&pat1, &pat2, &pat, args.split.no_dfa)?;
-        Ok(Splitter::AhoCorasick(splitter))
+        let matcher = AhoCorasickSplitter::new(&pat1, &pat2, &pat, args.split.no_dfa)?;
+        Ok(Splitter::new(
+            Matcher::AhoCorasick(matcher),
+            &pat1,
+            &pat2,
+            &pat,
+        ))
     } else {
         log::trace!("Using regex splitter backend");
-        let splitter = RegexSplitter::new(&pat1, &pat2, &pat)?;
-        Ok(Splitter::Regex(splitter))
+        let matcher = RegexSplitter::new(&pat1, &pat2, &pat)?;
+        Ok(Splitter::new(Matcher::Regex(matcher), &pat1, &pat2, &pat))
     }
 }
 
@@ -126,11 +136,20 @@ mod tests {
     /// Write a plain-text pattern file (one pattern per line).
     fn write_patterns(patterns: &[&str]) -> Result<NamedTempFile> {
         let tmp = NamedTempFile::with_suffix(".txt")?;
-        let mut f = std::fs::File::create(tmp.path())?;
-        for p in patterns {
-            writeln!(f, "{p}")?;
-        }
+        std::fs::write(tmp.path(), patterns.join("\n"))?;
         Ok(tmp)
+    }
+
+    /// Parse `split <args...>` and run it.
+    fn run_split(args: &[&str]) -> Result<()> {
+        let cmd = crate::cli::SplitCommand::try_parse_from(
+            std::iter::once("split").chain(args.iter().copied()),
+        )?;
+        super::run(&cmd)
+    }
+
+    fn path(p: &std::path::Path) -> &str {
+        p.to_str().unwrap()
     }
 
     /// Sum binseq record counts across every file in `dir` with `extension`.
@@ -161,18 +180,16 @@ mod tests {
             let pat_file = write_patterns(&["AAAA", "CCCC"])?;
             let out_dir = tempfile::tempdir()?;
 
-            let cmd = crate::cli::SplitCommand::try_parse_from([
-                "split",
-                bq_tmp.path().to_str().unwrap(),
+            run_split(&[
+                path(bq_tmp.path()),
                 "--file",
-                pat_file.path().to_str().unwrap(),
+                path(pat_file.path()),
                 "--basepath",
-                out_dir.path().to_str().unwrap(),
+                path(out_dir.path()),
                 "--min-records",
-                "0", // keep empty output files so we capture everything
+                "0",
                 "--quiet",
-            ])?;
-            super::run(&cmd)?;
+            ])?; // keep empty files so everything is counted
 
             let total = count_all_in_dir(out_dir.path(), mode.extension())?;
             assert_eq!(
@@ -192,20 +209,18 @@ mod tests {
 
         let pat_file = write_patterns(&["AAAA", "CCCC"])?;
         let out_dir = tempfile::tempdir()?;
-        let cmd = crate::cli::SplitCommand::try_parse_from([
-            "split",
-            bq_tmp.path().to_str().unwrap(),
+        run_split(&[
+            path(bq_tmp.path()),
             "--file",
-            pat_file.path().to_str().unwrap(),
+            path(pat_file.path()),
             "--basepath",
-            out_dir.path().to_str().unwrap(),
+            path(out_dir.path()),
             "--min-records",
             "0",
             "--span",
             "10..30",
             "--quiet",
         ])?;
-        super::run(&cmd)?;
         assert_eq!(count_all_in_dir(out_dir.path(), ".cbq")?, 20);
         Ok(())
     }
@@ -220,29 +235,26 @@ mod tests {
         let pat_file = NamedTempFile::with_suffix(".fa")?;
         std::fs::write(pat_file.path(), ">unmatched\nAAAA\n")?;
         let out_dir = tempfile::tempdir()?;
-        let cmd = crate::cli::SplitCommand::try_parse_from([
-            "split",
-            bq_tmp.path().to_str().unwrap(),
+        assert!(run_split(&[
+            path(bq_tmp.path()),
             "--file",
-            pat_file.path().to_str().unwrap(),
+            path(pat_file.path()),
             "--basepath",
-            out_dir.path().to_str().unwrap(),
-            "--quiet",
-        ])?;
-        assert!(super::run(&cmd).is_err());
+            path(out_dir.path()),
+            "--quiet"
+        ])
+        .is_err());
 
-        let cmd = crate::cli::SplitCommand::try_parse_from([
-            "split",
-            bq_tmp.path().to_str().unwrap(),
+        run_split(&[
+            path(bq_tmp.path()),
             "--file",
-            pat_file.path().to_str().unwrap(),
+            path(pat_file.path()),
             "--basepath",
-            out_dir.path().to_str().unwrap(),
+            path(out_dir.path()),
             "--unmatched-basename",
             "rest",
             "--quiet",
         ])?;
-        super::run(&cmd)?;
         Ok(())
     }
 
@@ -261,17 +273,15 @@ mod tests {
         let pat_file = write_patterns(&["A"])?;
         let out_dir = tempfile::tempdir()?;
 
-        let cmd = crate::cli::SplitCommand::try_parse_from([
-            "split",
-            bq_tmp.path().to_str().unwrap(),
+        run_split(&[
+            path(bq_tmp.path()),
             "--file",
-            pat_file.path().to_str().unwrap(),
+            path(pat_file.path()),
             "--basepath",
-            out_dir.path().to_str().unwrap(),
+            path(out_dir.path()),
             "--skip-unmatched",
             "--quiet",
         ])?;
-        super::run(&cmd)?;
 
         // Only the "A.cbq" file should exist; verify its count.
         let matched_path = out_dir.path().join("A.cbq");
@@ -302,17 +312,15 @@ mod tests {
         };
         let out_dir = tempfile::tempdir()?;
 
-        let cmd = crate::cli::SplitCommand::try_parse_from([
-            "split",
-            bq_tmp.path().to_str().unwrap(),
+        run_split(&[
+            path(bq_tmp.path()),
             "--file",
-            pat_file.path().to_str().unwrap(),
+            path(pat_file.path()),
             "--basepath",
-            out_dir.path().to_str().unwrap(),
+            path(out_dir.path()),
             "--skip-unmatched",
             "--quiet",
         ])?;
-        super::run(&cmd)?;
 
         // The alias "universal_pattern" → "universal_pattern.cbq"
         let matched_path = out_dir.path().join("universal_pattern.cbq");
@@ -343,18 +351,16 @@ mod tests {
         let pat_file = write_patterns(&["TGTAATC"])?;
         let out_dir = tempfile::tempdir()?;
 
-        let cmd = crate::cli::SplitCommand::try_parse_from([
-            "split",
-            bq_tmp.path().to_str().unwrap(),
+        run_split(&[
+            path(bq_tmp.path()),
             "--file",
-            pat_file.path().to_str().unwrap(),
+            path(pat_file.path()),
             "--basepath",
-            out_dir.path().to_str().unwrap(),
+            path(out_dir.path()),
             "--skip-unmatched",
             "--quiet",
             "--rc",
         ])?;
-        super::run(&cmd)?;
 
         // The pattern is reverse complemented to "GATTACA" before matching,
         // and the output alias reflects the RC'd sequence.
@@ -376,18 +382,17 @@ mod tests {
         let pat_file = write_patterns(&["AC.GT"])?;
         let out_dir = tempfile::tempdir()?;
 
-        let cmd = crate::cli::SplitCommand::try_parse_from([
-            "split",
-            bq_tmp.path().to_str().unwrap(),
-            "--file",
-            pat_file.path().to_str().unwrap(),
-            "--basepath",
-            out_dir.path().to_str().unwrap(),
-            "--quiet",
-            "--rc",
-        ])?;
         assert!(
-            super::run(&cmd).is_err(),
+            run_split(&[
+                path(bq_tmp.path()),
+                "--file",
+                path(pat_file.path()),
+                "--basepath",
+                path(out_dir.path()),
+                "--quiet",
+                "--rc",
+            ])
+            .is_err(),
             "--rc should reject regex patterns"
         );
 
