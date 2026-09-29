@@ -6,7 +6,6 @@ use crate::cli::QcCommand;
 
 mod base_content;
 mod base_quality;
-mod config;
 mod dup_levels;
 mod gc_content;
 mod modules;
@@ -15,7 +14,6 @@ mod report;
 mod seq_length;
 mod seq_quality;
 
-use config::QcConfig;
 use modules::QcModule;
 
 pub const PHRED_OFFSET: u8 = 33;
@@ -34,8 +32,8 @@ pub fn run(args: &QcCommand) -> Result<()> {
     let processed_records = range.as_ref().map_or(total_records, |r| r.end - r.start);
 
     let mut proc = proc::QcProcessor::new(
-        &args.qc.outdir,
-        QcConfig::from_opts(&args.qc, range.as_ref().map_or(0, |r| r.start)),
+        &args.qc,
+        range.as_ref().map_or(0, |r| r.start),
         args.input.path().to_string(),
         processed_records,
         paired,

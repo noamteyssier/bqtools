@@ -8,18 +8,15 @@ use serde::Serialize;
 use std::sync::Mutex;
 
 use super::report::{dual_section, table};
-use crate::commands::{match_output, qc::modules::QcModule};
+use crate::{
+    cli::QcOptions,
+    commands::{match_output, qc::modules::QcModule},
+};
 
 const DUPLICATION_LEVELS_PRIMARY_PATH: &str = "duplication_levels_R1.tsv";
 const DUPLICATION_LEVELS_EXTENDED_PATH: &str = "duplication_levels_R2.tsv";
 const OVERREPRESENTED_PRIMARY_PATH: &str = "overrepresented_sequences_R1.tsv";
 const OVERREPRESENTED_EXTENDED_PATH: &str = "overrepresented_sequences_R2.tsv";
-
-/// Number of leading records (by global file index) considered for
-/// duplication and overrepresented-sequence analysis. Bounding this keeps
-/// memory flat regardless of file size - mirrors `FastQC`'s own subsampling
-/// behavior for these modules.
-pub const DEFAULT_DUP_SAMPLE_SIZE: usize = 100_000;
 
 /// FastQC-style duplication level buckets: exact counts 1-9, then cumulative
 /// thresholds beyond that.
@@ -29,11 +26,6 @@ const LEVELS: &[usize] = &[
 const LABELS: &[&str] = &[
     "1", "2", "3", "4", "5", "6", "7", "8", "9", ">10", ">50", ">100", ">500", ">1k", ">5k", ">10k",
 ];
-
-/// A sequence occurring in at least this fraction of sampled reads is
-/// reported as overrepresented - mirrors `FastQC`'s own default threshold.
-/// User-configurable via `--overrepresented-threshold`.
-pub const DEFAULT_OVERREPRESENTED_THRESHOLD_PCT: f64 = 0.1;
 
 fn pct(n: usize, total: usize) -> f64 {
     if total == 0 {
@@ -280,34 +272,17 @@ pub struct SequenceDuplicationLevels {
     /// global - duplication counts (extended)
     xdup: Arc<Mutex<DuplicationCounter>>,
 }
-impl Default for SequenceDuplicationLevels {
-    fn default() -> Self {
-        Self::new(
-            0,
-            DEFAULT_DUP_SAMPLE_SIZE,
-            true,
-            true,
-            DEFAULT_OVERREPRESENTED_THRESHOLD_PCT,
-        )
-    }
-}
 impl SequenceDuplicationLevels {
     /// Both `emit_levels` and `emit_overrepresented` read from the same
     /// underlying per-sequence counts, so this module only needs
     /// constructing once even when both reports are wanted.
-    pub fn new(
-        span_start: usize,
-        sample_size: usize,
-        emit_levels: bool,
-        emit_overrepresented: bool,
-        overrepresented_threshold: f64,
-    ) -> Self {
+    pub fn new(opts: &QcOptions, span_start: usize) -> Self {
         Self {
             // record indices are file-global, so offset the limit by the span start
-            sample_end: (sample_size > 0).then(|| span_start + sample_size),
-            emit_levels,
-            emit_overrepresented,
-            overrepresented_threshold,
+            sample_end: (opts.dup_sample_size > 0).then(|| span_start + opts.dup_sample_size),
+            emit_levels: !opts.skip_dup_levels,
+            emit_overrepresented: !opts.skip_overrepresented,
+            overrepresented_threshold: opts.overrepresented_threshold,
             t_dup: DuplicationCounter::default(),
             t_xdup: DuplicationCounter::default(),
             dup: Arc::default(),

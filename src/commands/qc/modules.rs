@@ -3,10 +3,13 @@ use std::{any::type_name, path::Path};
 use anyhow::Result;
 use binseq::BinseqRecord;
 
-use crate::commands::qc::{
-    base_content::PerBaseSequenceContent, base_quality::PerBaseSequenceQuality,
-    dup_levels::SequenceDuplicationLevels, gc_content::PerSequenceGcContent,
-    seq_length::SequenceLengthDistribution, seq_quality::PerSequenceQuality,
+use crate::{
+    cli::QcOptions,
+    commands::qc::{
+        base_content::PerBaseSequenceContent, base_quality::PerBaseSequenceQuality,
+        dup_levels::SequenceDuplicationLevels, gc_content::PerSequenceGcContent,
+        seq_length::SequenceLengthDistribution, seq_quality::PerSequenceQuality,
+    },
 };
 
 pub trait QcModule {
@@ -65,20 +68,8 @@ impl QcModuleType {
     pub fn new_seq_length() -> Self {
         Self::SeqLength(SequenceLengthDistribution::default())
     }
-    pub fn new_duplication(
-        span_start: usize,
-        sample_size: usize,
-        emit_levels: bool,
-        emit_overrepresented: bool,
-        overrepresented_threshold: f64,
-    ) -> Self {
-        Self::Duplication(SequenceDuplicationLevels::new(
-            span_start,
-            sample_size,
-            emit_levels,
-            emit_overrepresented,
-            overrepresented_threshold,
-        ))
+    pub fn new_duplication(opts: &QcOptions, span_start: usize) -> Self {
+        Self::Duplication(SequenceDuplicationLevels::new(opts, span_start))
     }
 }
 impl QcModule for QcModuleType {

@@ -1,14 +1,12 @@
-use std::{
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::{io::Write, path::PathBuf};
 
-use crate::commands::qc::modules::QcModuleType;
+use crate::{cli::QcOptions, commands::qc::modules::QcModuleType};
 
-use super::{report::table, QcConfig, QcModule};
+use super::{report::table, QcModule};
 
 use anyhow::{bail, Result};
 use binseq::ParallelProcessor;
+use log::trace;
 
 use crate::commands::match_output;
 
@@ -24,19 +22,46 @@ pub struct QcProcessor {
     paired: bool,
 }
 impl QcProcessor {
-    pub fn new<P: AsRef<Path>>(
-        outdir: P,
-        config: QcConfig,
+    /// `span_start` is the first record index processed (non-zero with `--span`).
+    pub fn new(
+        opts: &QcOptions,
+        span_start: usize,
         input_path: String,
         num_records: usize,
         paired: bool,
     ) -> Result<Self> {
-        let modules = config.build_qc_modules();
+        let mut modules = Vec::default();
+        let mut add_module = |module: QcModuleType| {
+            trace!("Loaded: {}", module.desc());
+            modules.push(module);
+        };
+
+        trace!("Loading QC modules...");
+        if !opts.skip_base_qual {
+            add_module(QcModuleType::new_base_quality());
+        }
+        if !opts.skip_seq_qual {
+            add_module(QcModuleType::new_seq_quality());
+        }
+        if !opts.skip_base_content {
+            add_module(QcModuleType::new_base_content());
+        }
+        if !opts.skip_seq_gc {
+            add_module(QcModuleType::new_gc_content());
+        }
+        if !opts.skip_seq_length {
+            add_module(QcModuleType::new_seq_length());
+        }
+        if !opts.skip_dup_levels || !opts.skip_overrepresented {
+            add_module(QcModuleType::new_duplication(opts, span_start));
+        }
+        trace!("{} modules loaded", modules.len());
+
         if modules.is_empty() {
             bail!("Must provide at least one QC module to process")
         }
         Ok(Self {
-            outdir: outdir.as_ref().to_path_buf(),
+            outdir: PathBuf::from(&opts.outdir),
             modules,
             input_path,
             num_records,
