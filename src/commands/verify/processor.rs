@@ -32,11 +32,6 @@ fn write_field<H: Hasher>(hasher: &mut H, data: &[u8]) {
     hasher.write(data);
 }
 
-/// See [`write_field`] for why this avoids `Hasher::write_u64`.
-fn write_flag<H: Hasher>(hasher: &mut H, value: u64) {
-    hasher.write(&value.to_le_bytes());
-}
-
 /// Hashes the user-selected fields of a single record.
 ///
 /// Per-record hashes are combined by [`VerifyProcessor`] with a commutative
@@ -52,34 +47,38 @@ fn write_flag<H: Hasher>(hasher: &mut H, value: u64) {
 fn hash_record<R: BinseqRecord>(record: &R, fields: FieldMask, mate: Mate) -> u64 {
     let mut hasher = Xxh3::new();
 
-    let include_primary = matches!(mate, Mate::One | Mate::Both);
     let include_extended = record.is_paired() && matches!(mate, Mate::Two | Mate::Both);
 
-    if include_primary {
+    for (ext, included) in [
+        (false, matches!(mate, Mate::One | Mate::Both)),
+        (true, include_extended),
+    ] {
+        if !included {
+            continue;
+        }
         if fields.seq {
-            write_field(&mut hasher, record.sseq());
+            write_field(&mut hasher, if ext { record.xseq() } else { record.sseq() });
         }
         if fields.qual && record.has_quality() {
-            write_field(&mut hasher, record.squal());
+            write_field(
+                &mut hasher,
+                if ext { record.xqual() } else { record.squal() },
+            );
         }
         if fields.headers {
-            write_field(&mut hasher, record.sheader());
-        }
-    }
-    if include_extended {
-        if fields.seq {
-            write_field(&mut hasher, record.xseq());
-        }
-        if fields.qual && record.has_quality() {
-            write_field(&mut hasher, record.xqual());
-        }
-        if fields.headers {
-            write_field(&mut hasher, record.xheader());
+            write_field(
+                &mut hasher,
+                if ext {
+                    record.xheader()
+                } else {
+                    record.sheader()
+                },
+            );
         }
     }
     if fields.flags {
         if let Some(value) = record.flag() {
-            write_flag(&mut hasher, value);
+            hasher.write(&value.to_le_bytes());
         }
     }
 
@@ -248,13 +247,6 @@ mod tests {
         let mut expected = 2u64.to_le_bytes().to_vec();
         expected.extend_from_slice(b"AC");
         assert_eq!(spy.bytes, expected);
-    }
-
-    #[test]
-    fn test_write_flag_value_is_little_endian() {
-        let mut spy = SpyHasher::default();
-        write_flag(&mut spy, 0x0102_0304_0506_0708);
-        assert_eq!(spy.bytes, 0x0102_0304_0506_0708u64.to_le_bytes());
     }
 
     #[test]
