@@ -1,7 +1,7 @@
 use std::{
     ffi::CString,
     fs, io,
-    os::unix::ffi::OsStrExt,
+    os::unix::{ffi::OsStrExt, fs::FileTypeExt},
     path::Path,
 };
 
@@ -47,7 +47,12 @@ pub fn create_fifos(
         .collect()
 }
 
-/// Creates a FIFO with mode 0600. An existing path (`EEXIST`) is reused.
+fn is_fifo(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_fifo())
+}
+
+/// Creates a FIFO with mode 0600. An existing FIFO is reused; any other
+/// existing file is an error.
 fn mkfifo(path: &Path) -> io::Result<()> {
     let c_path = CString::new(path.as_os_str().as_bytes())?;
     // SAFETY: `c_path` is a valid NUL-terminated string for the call's duration.
@@ -55,7 +60,7 @@ fn mkfifo(path: &Path) -> io::Result<()> {
         return Ok(());
     }
     match io::Error::last_os_error() {
-        err if err.kind() == io::ErrorKind::AlreadyExists => {
+        err if err.kind() == io::ErrorKind::AlreadyExists && is_fifo(path) => {
             trace!("FIFO already exists at {}, reconnecting...", path.display());
             Ok(())
         }
@@ -98,7 +103,6 @@ pub fn name_fifo(basepath: &str, pid: usize, pair: RecordPair, format: FileForma
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::FileTypeExt;
     use std::os::unix::fs::PermissionsExt;
 
     fn fifo_at(dir: &tempfile::TempDir) -> std::path::PathBuf {
@@ -122,6 +126,17 @@ mod tests {
         let args = |b: &str| create_fifos(b, false, 2, FileFormat::Fastq, PairedChannels::Both);
         let first = args(&base).unwrap();
         assert_eq!(args(&base).unwrap(), first);
+    }
+
+    #[test]
+    fn existing_regular_file_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = fifo_at(&dir);
+        fs::write(&path, b"data").unwrap();
+        let err = mkfifo(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        // the file must be left untouched
+        assert_eq!(fs::read(&path).unwrap(), b"data");
     }
 
     #[test]
