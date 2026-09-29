@@ -1,31 +1,23 @@
-use std::{io::Write, path::Path, sync::Arc};
+use std::{io::Write, path::Path};
 
 use anyhow::Result;
 use binseq::BinseqRecord;
 use serde::Serialize;
-use std::sync::Mutex;
 
-use super::report::table;
-use crate::commands::{match_output, qc::modules::QcModule};
-
-const SEQ_LENGTH_PRIMARY_PATH: &str = "seq_length_R1.tsv";
-const SEQ_LENGTH_EXTENDED_PATH: &str = "seq_length_R2.tsv";
+use super::report::{add_assign, stats, table, write_tsv, Hist, Pair};
 
 #[derive(Serialize)]
-pub struct SeqLenRecord {
+struct SeqLenRecord {
     len: usize,
     count: usize,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct SeqLenHistogram {
+struct SeqLenHistogram {
     /// Indexed directly by sequence length
     inner: Vec<usize>,
 }
 impl SeqLenHistogram {
-    fn is_empty(&self) -> bool {
-        self.inner.iter().copied().sum::<usize>() == 0
-    }
     fn len(&self) -> usize {
         self.inner.len()
     }
@@ -39,44 +31,6 @@ impl SeqLenHistogram {
         }
         self.inner[len] += 1;
     }
-    fn ingest(&mut self, other: &mut Self) {
-        if self.len() < other.len() {
-            self.inner.resize(other.len(), 0);
-        }
-        self.inner
-            .iter_mut()
-            .zip(other.inner.iter_mut())
-            .for_each(|(u, v)| {
-                *u += *v;
-                *v = 0;
-            });
-    }
-    fn serialize_to<W: Write>(&self, wtr: &mut W) -> Result<()> {
-        if self.is_empty() {
-            return Ok(());
-        }
-
-        let mut ser = csv::WriterBuilder::default()
-            .delimiter(b'\t')
-            .has_headers(true)
-            .from_writer(wtr);
-
-        self.inner
-            .iter()
-            .copied()
-            .enumerate()
-            .filter(|(_, count)| *count > 0)
-            .try_for_each(|(len, count)| -> Result<()> {
-                ser.serialize(&SeqLenRecord { len, count })
-                    .map_err(Into::into)
-            })?;
-
-        ser.flush().map_err(Into::into)
-    }
-
-    fn total(&self) -> usize {
-        self.inner.iter().sum()
-    }
 
     fn min_len(&self) -> Option<usize> {
         self.inner.iter().position(|&c| c > 0)
@@ -85,92 +39,70 @@ impl SeqLenHistogram {
     fn max_len(&self) -> Option<usize> {
         self.inner.iter().rposition(|&c| c > 0)
     }
-
-    fn mean(&self) -> f64 {
-        let total = self.total();
-        if total == 0 {
-            0.0
-        } else {
-            let sum: usize = self.inner.iter().enumerate().map(|(len, &c)| len * c).sum();
-            sum as f64 / total as f64
-        }
+}
+impl Hist for SeqLenHistogram {
+    fn is_empty(&self) -> bool {
+        self.inner.iter().all(|&c| c == 0)
     }
 
-    fn mode(&self) -> usize {
-        self.inner
-            .iter()
-            .enumerate()
-            .max_by_key(|&(_, &c)| c)
-            .map_or(0, |(len, _)| len)
+    fn ingest(&mut self, other: &mut Self) {
+        if self.len() < other.len() {
+            self.inner.resize(other.len(), 0);
+        }
+        add_assign(&mut self.inner, &mut other.inner);
+    }
+
+    fn serialize_to<W: Write>(&self, wtr: &mut W) -> Result<()> {
+        if self.is_empty() {
+            return Ok(());
+        }
+
+        write_tsv(
+            wtr,
+            self.inner
+                .iter()
+                .enumerate()
+                .filter(|(_, &count)| count > 0)
+                .map(|(len, &count)| SeqLenRecord { len, count }),
+        )
     }
 
     fn summary_table(&self) -> Option<String> {
         if self.is_empty() {
             return None;
         }
+        let (total, mean, _, mode) = stats(&self.inner);
         Some(table(
             &["Metric", "Value"],
             &[
-                vec!["Reads".into(), self.total().to_string()],
+                vec!["Reads".into(), total.to_string()],
                 vec!["Min Length".into(), self.min_len().unwrap_or(0).to_string()],
                 vec!["Max Length".into(), self.max_len().unwrap_or(0).to_string()],
-                vec!["Mean Length".into(), format!("{:.2}", self.mean())],
-                vec!["Mode Length".into(), self.mode().to_string()],
+                vec!["Mean Length".into(), format!("{mean:.2}")],
+                vec!["Mode Length".into(), mode.to_string()],
             ],
         ))
     }
 }
 
 #[derive(Clone, Default)]
-pub struct SequenceLengthDistribution {
-    /// thread - sequence length distribution (primary)
-    t_slen: SeqLenHistogram,
-    /// thread - sequence length distribution (extended)
-    t_xlen: SeqLenHistogram,
-
-    /// global - sequence length distribution (primary)
-    slen: Arc<Mutex<SeqLenHistogram>>,
-    /// global - sequence length distribution (extended)
-    xlen: Arc<Mutex<SeqLenHistogram>>,
-}
-impl QcModule for SequenceLengthDistribution {
-    fn push<R: BinseqRecord>(&mut self, record: &R) {
-        self.t_slen.push(record.slen() as usize);
-        self.t_xlen.push(record.xlen() as usize);
+pub struct SequenceLengthDistribution(Pair<SeqLenHistogram>);
+impl SequenceLengthDistribution {
+    pub fn push<R: BinseqRecord>(&mut self, record: &R) {
+        self.0.t[0].push(record.slen() as usize);
+        self.0.t[1].push(record.xlen() as usize);
     }
 
-    fn sync_final(&mut self) {
-        self.slen.lock().unwrap().ingest(&mut self.t_slen);
-        self.xlen.lock().unwrap().ingest(&mut self.t_xlen);
+    pub fn sync_final(&mut self) {
+        self.0.sync_final();
     }
 
-    fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
-        if !outdir.as_ref().exists() {
-            std::fs::create_dir_all(outdir.as_ref())?;
-        }
-
-        let write_to = |hist: &SeqLenHistogram, primary: bool| -> Result<()> {
-            if hist.is_empty() {
-                return Ok(());
-            }
-            let mut handle = if primary {
-                match_output(Some(outdir.as_ref().join(SEQ_LENGTH_PRIMARY_PATH)))
-            } else {
-                match_output(Some(outdir.as_ref().join(SEQ_LENGTH_EXTENDED_PATH)))
-            }?;
-            hist.serialize_to(&mut handle)
-        };
-
-        write_to(&self.slen.lock().unwrap(), true)?;
-        write_to(&self.xlen.lock().unwrap(), false)?;
-
-        Ok(())
+    pub fn finish(&mut self, outdir: &Path) -> Result<()> {
+        self.0.write(outdir, "seq_length")
     }
 
-    fn summarize(&self) -> String {
-        let primary = self.slen.lock().unwrap().summary_table();
-        let extended = self.xlen.lock().unwrap().summary_table();
-        super::report::dual_section("Sequence Length Distribution", primary, extended)
+    pub fn summarize(&self) -> String {
+        self.0.summarize("Sequence Length Distribution")
     }
 }
 
@@ -197,10 +129,10 @@ mod tests {
         hist.push(100);
         hist.push(150);
         assert!(!hist.is_empty());
-        assert_eq!(hist.total(), 3);
+        assert_eq!(stats(&hist.inner).0, 3);
         assert_eq!(hist.min_len(), Some(100));
         assert_eq!(hist.max_len(), Some(150));
-        assert_eq!(hist.mode(), 100);
+        assert_eq!(stats(&hist.inner).3, 100);
     }
 
     #[test]
@@ -209,7 +141,7 @@ mod tests {
         hist.push(100);
         hist.push(100);
         hist.push(200);
-        assert!((hist.mean() - 133.333_333_333_333_33).abs() < 1e-6);
+        assert!((stats(&hist.inner).1 - 133.333_333_333_333_33).abs() < 1e-6);
     }
 
     #[test]
@@ -239,7 +171,7 @@ mod tests {
 
         a.ingest(&mut b);
 
-        assert_eq!(a.total(), 2);
+        assert_eq!(stats(&a.inner).0, 2);
         assert_eq!(a.min_len(), Some(100));
         assert_eq!(a.max_len(), Some(200));
         assert!(b.is_empty());

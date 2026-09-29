@@ -1,14 +1,12 @@
 use anyhow::Result;
 use binseq::BinseqRecord;
 use serde::Serialize;
-use std::sync::Mutex;
-use std::{io::Write, ops::Div, path::Path, sync::Arc};
+use std::{io::Write, path::Path};
 
-use super::{report::table, QualAbundance, DEFAULT_QUAL_ABUNDANCE, PHRED_OFFSET};
-use crate::commands::{match_output, qc::modules::QcModule};
-
-const SEQ_QUALITY_PRIMARY_PATH: &str = "seq_quality_R1.tsv";
-const SEQ_QUALITY_EXTENDED_PATH: &str = "seq_quality_R2.tsv";
+use super::{
+    report::{add_assign, stats, table, write_tsv, Hist, Pair},
+    QualAbundance, DEFAULT_QUAL_ABUNDANCE, PHRED_OFFSET,
+};
 
 #[derive(Serialize)]
 struct SeqQualityRecord {
@@ -17,7 +15,7 @@ struct SeqQualityRecord {
 }
 
 #[derive(Clone)]
-pub struct QualHistogram {
+struct QualHistogram {
     inner: QualAbundance,
 }
 impl Default for QualHistogram {
@@ -28,54 +26,6 @@ impl Default for QualHistogram {
     }
 }
 impl QualHistogram {
-    fn is_empty(&self) -> bool {
-        self.inner.iter().copied().sum::<usize>() == 0
-    }
-
-    fn total(&self) -> usize {
-        self.inner.iter().sum()
-    }
-
-    fn mean(&self) -> f64 {
-        let total = self.total();
-        if total == 0 {
-            0.0
-        } else {
-            let sum: usize = self.inner.iter().enumerate().map(|(q, &c)| q * c).sum();
-            sum as f64 / total as f64
-        }
-    }
-
-    fn median(&self) -> usize {
-        let total = self.total();
-        if total == 0 {
-            return 0;
-        }
-        let half = total / 2;
-        let mut cum = 0;
-        for (q, &c) in self.inner.iter().enumerate() {
-            cum += c;
-            if cum > half {
-                return q;
-            }
-        }
-        0
-    }
-
-    fn summary_table(&self) -> Option<String> {
-        if self.is_empty() {
-            return None;
-        }
-        Some(table(
-            &["Metric", "Value"],
-            &[
-                vec!["Reads".into(), self.total().to_string()],
-                vec!["Mean Quality".into(), format!("{:.2}", self.mean())],
-                vec!["Median Quality".into(), self.median().to_string()],
-            ],
-        ))
-    }
-
     #[allow(clippy::cast_sign_loss)]
     fn push(&mut self, qual: &[u8]) {
         if qual.is_empty() {
@@ -85,18 +35,17 @@ impl QualHistogram {
             .iter()
             .map(|x| x.saturating_sub(PHRED_OFFSET) as usize)
             .sum();
-        let binned_mean = (total as f64).div(&(qual.len() as f64)).round() as usize;
+        let binned_mean = (total as f64 / qual.len() as f64).round() as usize;
         self.inner[binned_mean.min(self.inner.len() - 1)] += 1;
+    }
+}
+impl Hist for QualHistogram {
+    fn is_empty(&self) -> bool {
+        self.inner.iter().all(|&c| c == 0)
     }
 
     fn ingest(&mut self, other: &mut Self) {
-        self.inner
-            .iter_mut()
-            .zip(other.inner.iter_mut())
-            .for_each(|(u, v)| {
-                *u += *v;
-                *v = 0;
-            });
+        add_assign(&mut self.inner, &mut other.inner);
     }
 
     fn serialize_to<W: Write>(&self, wtr: &mut W) -> Result<()> {
@@ -104,70 +53,49 @@ impl QualHistogram {
             return Ok(());
         }
 
-        let mut ser = csv::WriterBuilder::default()
-            .delimiter(b'\t')
-            .has_headers(true)
-            .from_writer(wtr);
+        write_tsv(
+            wtr,
+            self.inner
+                .iter()
+                .enumerate()
+                .map(|(qual, &count)| SeqQualityRecord { qual, count }),
+        )
+    }
 
-        self.inner
-            .iter()
-            .copied()
-            .enumerate()
-            .try_for_each(|(qual, count)| -> Result<()> {
-                ser.serialize(&SeqQualityRecord { qual, count })
-                    .map_err(Into::into)
-            })?;
-
-        ser.flush().map_err(Into::into)
+    fn summary_table(&self) -> Option<String> {
+        if self.is_empty() {
+            return None;
+        }
+        let (total, mean, median, _) = stats(&self.inner);
+        Some(table(
+            &["Metric", "Value"],
+            &[
+                vec!["Reads".into(), total.to_string()],
+                vec!["Mean Quality".into(), format!("{mean:.2}")],
+                vec!["Median Quality".into(), median.to_string()],
+            ],
+        ))
     }
 }
 
 #[derive(Default, Clone)]
-pub struct PerSequenceQuality {
-    t_seq_squal: QualHistogram,
-    t_seq_xqual: QualHistogram,
-
-    seq_squal: Arc<Mutex<QualHistogram>>,
-    seq_xqual: Arc<Mutex<QualHistogram>>,
-}
-impl QcModule for PerSequenceQuality {
-    fn push<R: BinseqRecord>(&mut self, record: &R) {
-        self.t_seq_squal.push(record.squal());
-        self.t_seq_xqual.push(record.xqual());
+pub struct PerSequenceQuality(Pair<QualHistogram>);
+impl PerSequenceQuality {
+    pub fn push<R: BinseqRecord>(&mut self, record: &R) {
+        self.0.t[0].push(record.squal());
+        self.0.t[1].push(record.xqual());
     }
 
-    fn sync_final(&mut self) {
-        self.seq_squal.lock().unwrap().ingest(&mut self.t_seq_squal);
-        self.seq_xqual.lock().unwrap().ingest(&mut self.t_seq_xqual);
+    pub fn sync_final(&mut self) {
+        self.0.sync_final();
     }
 
-    fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
-        if !outdir.as_ref().exists() {
-            std::fs::create_dir_all(outdir.as_ref())?;
-        }
-
-        let write_to = |seq_qual: &QualHistogram, primary: bool| -> Result<()> {
-            if seq_qual.is_empty() {
-                return Ok(());
-            }
-            let mut handle = if primary {
-                match_output(Some(outdir.as_ref().join(SEQ_QUALITY_PRIMARY_PATH)))
-            } else {
-                match_output(Some(outdir.as_ref().join(SEQ_QUALITY_EXTENDED_PATH)))
-            }?;
-            seq_qual.serialize_to(&mut handle)
-        };
-
-        write_to(&self.seq_squal.lock().unwrap(), true)?;
-        write_to(&self.seq_xqual.lock().unwrap(), false)?;
-
-        Ok(())
+    pub fn finish(&mut self, outdir: &Path) -> Result<()> {
+        self.0.write(outdir, "seq_quality")
     }
 
-    fn summarize(&self) -> String {
-        let primary = self.seq_squal.lock().unwrap().summary_table();
-        let extended = self.seq_xqual.lock().unwrap().summary_table();
-        super::report::dual_section("Per-Sequence Quality", primary, extended)
+    pub fn summarize(&self) -> String {
+        self.0.summarize("Per-Sequence Quality")
     }
 }
 
@@ -199,8 +127,8 @@ mod tests {
         let mut hist = QualHistogram::default();
         hist.push(&phred(&[10, 20])); // mean 15
         assert!(!hist.is_empty());
-        assert_eq!(hist.total(), 1);
-        assert_eq!(hist.mean(), 15.0);
+        assert_eq!(stats(&hist.inner).0, 1);
+        assert_eq!(stats(&hist.inner).1, 15.0);
     }
 
     #[test]
@@ -209,9 +137,9 @@ mod tests {
         hist.push(&phred(&[10]));
         hist.push(&phred(&[20]));
         hist.push(&phred(&[30]));
-        assert_eq!(hist.total(), 3);
-        assert_eq!(hist.mean(), 20.0);
-        assert_eq!(hist.median(), 20);
+        assert_eq!(stats(&hist.inner).0, 3);
+        assert_eq!(stats(&hist.inner).1, 20.0);
+        assert_eq!(stats(&hist.inner).2, 20);
     }
 
     #[test]
@@ -239,8 +167,8 @@ mod tests {
 
         a.ingest(&mut b);
 
-        assert_eq!(a.total(), 2);
-        assert_eq!(a.mean(), 20.0);
+        assert_eq!(stats(&a.inner).0, 2);
+        assert_eq!(stats(&a.inner).1, 20.0);
         assert!(b.is_empty());
     }
 }
