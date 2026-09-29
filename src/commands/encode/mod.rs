@@ -50,9 +50,9 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
         #[cfg(feature = "htslib")]
         {
             let (kind, context) = if interleaved {
-                ("interleaved", "Must provide an input path for HTSLib")
+                ("interleaved", "Must provide an input path for htslib")
             } else {
-                ("single", "Must provide an input path for HTSlib")
+                ("single", "Must provide an input path for htslib")
             };
             trace!("launching {kind} encoding (htslib)");
             encode_htslib(
