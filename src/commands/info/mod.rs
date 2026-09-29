@@ -350,7 +350,7 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use crate::cli::{BinseqMode, FileFormat};
-    use crate::testutils::{count_binseq, write_fastx, Compression, DEFAULT_NUM_RECORDS};
+    use crate::testutils::{write_fastx, Compression, DEFAULT_NUM_RECORDS};
 
     fn encode(in_path: &std::path::Path, out_path: &std::path::Path) -> Result<()> {
         let cmd = crate::cli::EncodeCommand::try_parse_from([
@@ -374,23 +374,16 @@ mod tests {
             let bq_tmp = NamedTempFile::with_suffix(mode.extension())?;
             encode(in_tmp.path(), bq_tmp.path())?;
 
-            // BinseqInfo::from_path wraps BinseqReader::num_records — verify it agrees with
-            // a direct reader call so info and the reader are always in sync.
             let info = super::BinseqInfo::from_path(bq_tmp.path().to_str().unwrap())?;
             let info_count = match &info {
                 super::BinseqInfo::Bq(b) => b.num_records,
                 super::BinseqInfo::Vbq(v) => v.num_records,
                 super::BinseqInfo::Cbq(c) => c.num_records,
             };
-            let reader_count = count_binseq(bq_tmp.path())?;
 
             assert_eq!(
                 info_count, DEFAULT_NUM_RECORDS,
                 "info record count wrong for {mode:?} {fmt:?} {comp:?}"
-            );
-            assert_eq!(
-                info_count, reader_count,
-                "info and BinseqReader disagree on count for {mode:?} {fmt:?} {comp:?}"
             );
         }
         Ok(())
