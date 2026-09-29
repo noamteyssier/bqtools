@@ -77,17 +77,6 @@ impl PatternCount for RegexPatternCounter {
         self.re1.len() + self.re2.len() + self.re.len()
     }
 
-    fn pattern_strings(&self) -> Vec<String> {
-        self.all_patterns
-            .iter()
-            .map(|pat| {
-                std::str::from_utf8(&pat.sequence)
-                    .expect("Error converting pattern to string")
-                    .to_string()
-            })
-            .collect()
-    }
-
     fn pattern_names(&self) -> Vec<String> {
         self.all_patterns.names()
     }

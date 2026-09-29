@@ -72,18 +72,17 @@ impl<Pc: PatternCount> PatternCountProcessor<Pc> {
             .from_writer(stdout());
 
         let total_records = *self.global_total.lock().unwrap();
-        let patterns = self.counter.pattern_strings();
-
-        patterns
+        for (name, count) in self
+            .pattern_names
             .iter()
-            .enumerate()
             .zip(self.global_pattern_count.iter())
-            .try_for_each(|((idx, _pattern), count)| -> Result<()> {
-                let name = &self.pattern_names[idx];
-                let record = PatternCountResult::new(name, *count.lock().unwrap(), total_records);
-                writer.serialize(record)?;
-                Ok(())
-            })?;
+        {
+            writer.serialize(PatternCountResult::new(
+                name,
+                *count.lock().unwrap(),
+                total_records,
+            ))?;
+        }
 
         writer.flush()?;
         Ok(())

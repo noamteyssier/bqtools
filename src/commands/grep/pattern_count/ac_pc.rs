@@ -131,17 +131,6 @@ impl PatternCount for AhoCorasickPatternCounter {
         self.state1.patterns_len() + self.state2.patterns_len() + self.state.patterns_len()
     }
 
-    fn pattern_strings(&self) -> Vec<String> {
-        self.all_patterns
-            .iter()
-            .map(|pat| {
-                std::str::from_utf8(&pat.sequence)
-                    .expect("Error converting pattern to string")
-                    .to_string()
-            })
-            .collect()
-    }
-
     fn pattern_names(&self) -> Vec<String> {
         self.all_patterns.names()
     }

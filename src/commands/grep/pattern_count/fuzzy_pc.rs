@@ -188,17 +188,6 @@ impl PatternCount for FuzzyPatternCounter {
                 .map_or(0, sassy::EncodedPatterns::n_queries)
     }
 
-    fn pattern_strings(&self) -> Vec<String> {
-        self.all_patterns
-            .iter()
-            .map(|pat| {
-                std::str::from_utf8(&pat.sequence)
-                    .expect("Invalid UTF-8 found in pattern")
-                    .to_string()
-            })
-            .collect()
-    }
-
     fn pattern_names(&self) -> Vec<String> {
         self.all_patterns.names()
     }

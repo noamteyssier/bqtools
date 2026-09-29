@@ -25,8 +25,6 @@ pub trait PatternCount: Clone + Send + Sync {
 
     fn num_patterns(&self) -> usize;
 
-    fn pattern_strings(&self) -> Vec<String>;
-
     /// Returns pattern names (FASTA headers if present, otherwise the pattern strings).
     fn pattern_names(&self) -> Vec<String>;
 }
@@ -60,15 +58,6 @@ impl PatternCount for PatternCounter {
             PatternCounter::AhoCorasick(counter) => counter.num_patterns(),
             #[cfg(feature = "fuzzy")]
             PatternCounter::Fuzzy(counter) => counter.num_patterns(),
-        }
-    }
-
-    fn pattern_strings(&self) -> Vec<String> {
-        match self {
-            PatternCounter::Regex(counter) => counter.pattern_strings(),
-            PatternCounter::AhoCorasick(counter) => counter.pattern_strings(),
-            #[cfg(feature = "fuzzy")]
-            PatternCounter::Fuzzy(counter) => counter.pattern_strings(),
         }
     }
 
@@ -231,11 +220,11 @@ mod pattern_count_tests {
     }
 
     #[test]
-    fn test_regex_pattern_counter_pattern_strings() {
+    fn test_regex_pattern_counter_pattern_names() {
         let counter =
             RegexPatternCounter::new(pc(&[b"AAAA", b"TTTT"]), pc(&[]), pc(&[]), false).unwrap();
 
-        let patterns = counter.pattern_strings();
+        let patterns = counter.pattern_names();
         assert_eq!(patterns.len(), 2);
         assert_eq!(patterns[0], "AAAA");
         assert_eq!(patterns[1], "TTTT");
@@ -599,7 +588,7 @@ mod pattern_count_tests {
 
     #[cfg(feature = "fuzzy")]
     #[test]
-    fn test_fuzzy_pattern_counter_pattern_strings() {
+    fn test_fuzzy_pattern_counter_pattern_names() {
         let counter = FuzzyPatternCounter::new(
             pc(&[b"AAAAAAAA", b"TTTTTTTT"]),
             pc(&[]),
@@ -611,7 +600,7 @@ mod pattern_count_tests {
         )
         .unwrap();
 
-        let patterns = counter.pattern_strings();
+        let patterns = counter.pattern_names();
         assert_eq!(patterns.len(), 2);
         assert_eq!(patterns[0], "AAAAAAAA");
         assert_eq!(patterns[1], "TTTTTTTT");
@@ -779,12 +768,12 @@ mod pattern_count_tests {
     }
 
     #[test]
-    fn test_aho_corasick_pattern_counter_pattern_strings() {
+    fn test_aho_corasick_pattern_counter_pattern_names() {
         let counter =
             AhoCorasickPatternCounter::new(pc(&[b"AAAA", b"TTTT"]), pc(&[]), pc(&[]), false, false)
                 .unwrap();
 
-        let patterns = counter.pattern_strings();
+        let patterns = counter.pattern_names();
         assert_eq!(patterns.len(), 2);
         assert_eq!(patterns[0], "AAAA");
         assert_eq!(patterns[1], "TTTT");
