@@ -25,7 +25,7 @@ struct SampleProcessor {
 
     /// Write Options
     format: FileFormat,
-    mate: Option<Mate>,
+    mate: Mate,
     is_split: bool,
 
     /// Global values
@@ -37,7 +37,7 @@ impl SampleProcessor {
         seed: u64,
         writer: SplitWriter,
         format: FileFormat,
-        mate: Option<Mate>,
+        mate: Mate,
     ) -> Self {
         Self {
             fraction,
@@ -115,12 +115,12 @@ impl ParallelProcessor for SampleProcessor {
 pub fn run(args: &SampleCommand) -> Result<()> {
     args.sample.validate()?;
     let reader = BinseqReader::new(args.input.path())?;
-    let writer = build_writer(&args.output, reader.is_paired())?;
     let format = args.output.format()?;
+    let writer = build_writer(&args.output, format, reader.is_paired())?;
     let mate = if reader.is_paired() {
-        Some(args.output.mate)
+        args.output.mate
     } else {
-        None
+        Mate::One
     };
     let proc = SampleProcessor::new(args.sample.fraction, args.sample.seed, writer, format, mate);
     if let Some(span) = args.input.span {

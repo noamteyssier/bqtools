@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use binseq::prelude::*;
@@ -24,16 +25,16 @@ pub struct Decoder {
 
     /// Options
     format: FileFormat,
-    mate: Option<Mate>,
+    mate: Mate,
     is_split: bool,
 
     /// Global values
     global_writer: Arc<Mutex<SplitWriter>>,
-    num_records: Arc<Mutex<usize>>,
+    num_records: Arc<AtomicUsize>,
 }
 
 impl Decoder {
-    pub fn new(writer: SplitWriter, format: FileFormat, mate: Option<Mate>) -> Self {
+    pub fn new(writer: SplitWriter, format: FileFormat, mate: Mate) -> Self {
         Decoder {
             mixed: Vec::new(),
             left: Vec::new(),
@@ -45,12 +46,12 @@ impl Decoder {
             mate,
             is_split: writer.is_split(),
             global_writer: Arc::new(Mutex::new(writer)),
-            num_records: Arc::new(Mutex::new(0)),
+            num_records: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     pub fn num_records(&self) -> usize {
-        *self.num_records.lock().unwrap()
+        self.num_records.load(Ordering::Relaxed)
     }
 }
 
@@ -97,11 +98,8 @@ impl ParallelProcessor for Decoder {
             let mut writer = self.global_writer.lock().unwrap();
             writer.write_batch(&self.left, &self.right, &self.mixed)?;
         }
-        // Lock the mutex to update the number of records
-        {
-            let mut num_records = self.num_records.lock().unwrap();
-            *num_records += self.local_count;
-        }
+        self.num_records
+            .fetch_add(self.local_count, Ordering::Relaxed);
 
         // Clear the local buffer and reset the local record count
         self.mixed.clear();

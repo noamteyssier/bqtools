@@ -215,7 +215,7 @@ impl<Pm: PatternMatch> ParallelProcessor for FilterProcessor<Pm> {
                     &mut self.left,
                     &mut self.right,
                     &mut self.mixed,
-                    self.mate,
+                    self.mate.unwrap_or(Mate::One),
                     self.is_split,
                     sbuf,
                     squal,

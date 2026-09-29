@@ -2,49 +2,8 @@ use std::io::Write;
 
 use anyhow::Result;
 
-use super::Writer;
 use crate::cli::{FileFormat, Mate};
-
-pub fn write_fastq_parts<W: Write>(
-    writer: &mut W,
-    index: &[u8],
-    sequence: &[u8],
-    quality: &[u8],
-) -> std::io::Result<()> {
-    writer.write_all(b"@")?;
-    writer.write_all(index)?;
-    writer.write_all(b"\n")?;
-    writer.write_all(sequence)?;
-    writer.write_all(b"\n+\n")?;
-    writer.write_all(quality)?;
-    writer.write_all(b"\n")?;
-    Ok(())
-}
-
-pub fn write_fasta_parts<W: Write>(
-    writer: &mut W,
-    index: &[u8],
-    sequence: &[u8],
-) -> std::io::Result<()> {
-    writer.write_all(b">")?;
-    writer.write_all(index)?;
-    writer.write_all(b"\n")?;
-    writer.write_all(sequence)?;
-    writer.write_all(b"\n")?;
-    Ok(())
-}
-
-pub fn write_tsv_parts<W: Write>(
-    writer: &mut W,
-    index: &[u8],
-    sequence: &[u8],
-) -> std::io::Result<()> {
-    writer.write_all(index)?;
-    writer.write_all(b"\t")?;
-    writer.write_all(sequence)?;
-    writer.write_all(b"\n")?;
-    Ok(())
-}
+use crate::types::BoxedWriter;
 
 /// Placeholder quality (`?`, Phred 30) of length `len`, growing `buf` as needed.
 pub fn fill_qual(buf: &mut Vec<u8>, len: usize) -> &[u8] {
@@ -55,8 +14,13 @@ pub fn fill_qual(buf: &mut Vec<u8>, len: usize) -> &[u8] {
 }
 
 pub enum SplitWriter {
-    Interleaved { inner: Writer },
-    Split { left: Writer, right: Writer },
+    Interleaved {
+        inner: BoxedWriter,
+    },
+    Split {
+        left: BoxedWriter,
+        right: BoxedWriter,
+    },
 }
 impl SplitWriter {
     pub fn is_split(&self) -> bool {
@@ -100,13 +64,14 @@ pub fn write_record<W: Write>(
     quality: &[u8],
     format: FileFormat,
 ) -> Result<(), std::io::Error> {
-    let qual_buf = &quality[..sequence.len()];
-    match format {
-        FileFormat::Fasta => write_fasta_parts(writer, header, sequence),
-        FileFormat::Fastq => write_fastq_parts(writer, header, sequence, qual_buf),
-        FileFormat::Tsv => write_tsv_parts(writer, header, sequence),
+    let qual = &quality[..sequence.len()];
+    let parts: &[&[u8]] = match format {
+        FileFormat::Fasta => &[b">", header, b"\n", sequence, b"\n"],
+        FileFormat::Fastq => &[b"@", header, b"\n", sequence, b"\n+\n", qual, b"\n"],
+        FileFormat::Tsv => &[header, b"\t", sequence, b"\n"],
         FileFormat::Bam => unimplemented!("Cannot write BAM record from here"),
-    }
+    };
+    parts.iter().try_for_each(|p| writer.write_all(p))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -114,7 +79,7 @@ pub fn write_record_pair<W: Write>(
     left: &mut W,
     right: &mut W,
     mixed: &mut W,
-    mate: Option<Mate>,
+    mate: Mate,
     split: bool,
     sbuf: &[u8],
     squal: &[u8],
@@ -125,7 +90,7 @@ pub fn write_record_pair<W: Write>(
     format: FileFormat,
 ) -> Result<()> {
     match mate {
-        Some(Mate::Both) => {
+        Mate::Both => {
             if split {
                 write_record(left, sheader, sbuf, squal, format)?;
                 if !xbuf.is_empty() {
@@ -138,10 +103,10 @@ pub fn write_record_pair<W: Write>(
                 }
             }
         }
-        Some(Mate::One) | None => {
+        Mate::One => {
             write_record(mixed, sheader, sbuf, squal, format)?;
         }
-        Some(Mate::Two) => {
+        Mate::Two => {
             write_record(mixed, xheader, xbuf, xqual, format)?;
         }
     }

@@ -1,9 +1,7 @@
-use std::io::Write;
-
 mod decode_binseq;
 mod utils;
 
-use crate::cli::{DecodeCommand, Mate, OutputFile};
+use crate::cli::{DecodeCommand, FileFormat, Mate, OutputFile};
 use decode_binseq::Decoder;
 pub use utils::{fill_qual, write_record, write_record_pair, SplitWriter};
 
@@ -11,12 +9,7 @@ use anyhow::{bail, Result};
 use binseq::prelude::*;
 use log::{info, warn};
 
-/// Convenience type wrapper
-pub type Writer = Box<dyn Write + Send>;
-
-pub fn build_writer(args: &OutputFile, paired: bool) -> Result<SplitWriter> {
-    let format = args.format()?;
-
+pub fn build_writer(args: &OutputFile, format: FileFormat, paired: bool) -> Result<SplitWriter> {
     // Split writer
     if args.prefix.is_some() {
         if !paired {
@@ -31,13 +24,8 @@ pub fn build_writer(args: &OutputFile, paired: bool) -> Result<SplitWriter> {
             right: r2,
         })
     } else {
-        if !paired {
-            match args.mate {
-                Mate::One | Mate::Two => {
-                    warn!("Ignoring `--mate/-m` flag as only single channel found in file");
-                }
-                Mate::Both => {}
-            }
+        if !paired && args.mate != Mate::Both {
+            warn!("Ignoring `--mate/-m` flag as only single channel found in file");
         }
 
         // Interleaved writer
@@ -49,12 +37,12 @@ pub fn build_writer(args: &OutputFile, paired: bool) -> Result<SplitWriter> {
 
 pub fn run(args: &DecodeCommand) -> Result<()> {
     let reader = BinseqReader::new(args.input.path())?;
-    let writer = build_writer(&args.output, reader.is_paired())?;
     let format = args.output.format()?;
+    let writer = build_writer(&args.output, format, reader.is_paired())?;
     let mate = if reader.is_paired() {
-        Some(args.output.mate)
+        args.output.mate
     } else {
-        None
+        Mate::One
     };
     let proc = Decoder::new(writer, format, mate);
     if let Some(span) = args.input.span {
