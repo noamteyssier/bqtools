@@ -1,9 +1,8 @@
 use std::hash::Hasher;
-use std::num::Wrapping;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use binseq::{BinseqRecord, ParallelProcessor};
-use std::sync::Mutex;
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::cli::Mate;
@@ -93,23 +92,21 @@ pub struct VerifyProcessor {
     mate: Mate,
 
     /// Thread-local partial sum/count, merged into the shared totals on each batch.
-    t_checksum: Wrapping<u64>,
+    /// (Per-record atomic adds contend badly across threads.)
+    t_checksum: u64,
     t_count: usize,
 
     /// Shared totals across all threads.
-    checksum: Arc<Mutex<Wrapping<u64>>>,
-    count: Arc<Mutex<usize>>,
+    total: Arc<(AtomicU64, AtomicUsize)>,
 }
 
 impl Clone for VerifyProcessor {
     fn clone(&self) -> Self {
         Self {
-            fields: self.fields,
-            mate: self.mate,
-            t_checksum: Wrapping(0),
+            t_checksum: 0,
             t_count: 0,
-            checksum: self.checksum.clone(),
-            count: self.count.clone(),
+            total: self.total.clone(),
+            ..*self
         }
     }
 }
@@ -119,33 +116,34 @@ impl VerifyProcessor {
         Self {
             fields,
             mate,
-            t_checksum: Wrapping(0),
+            t_checksum: 0,
             t_count: 0,
-            checksum: Arc::new(Mutex::new(Wrapping(0))),
-            count: Arc::new(Mutex::new(0)),
+            total: Arc::default(),
         }
     }
 
     pub fn checksum(&self) -> u64 {
-        self.checksum.lock().unwrap().0
+        self.total.0.load(Ordering::Relaxed)
     }
 
     pub fn num_records(&self) -> usize {
-        *self.count.lock().unwrap()
+        self.total.1.load(Ordering::Relaxed)
     }
 }
 
 impl ParallelProcessor for VerifyProcessor {
     fn process_record<R: BinseqRecord>(&mut self, record: R) -> binseq::Result<()> {
-        self.t_checksum += Wrapping(hash_record(&record, self.fields, self.mate));
+        self.t_checksum =
+            self.t_checksum
+                .wrapping_add(hash_record(&record, self.fields, self.mate));
         self.t_count += 1;
         Ok(())
     }
 
     fn on_batch_complete(&mut self) -> binseq::Result<()> {
-        *self.checksum.lock().unwrap() += self.t_checksum;
-        *self.count.lock().unwrap() += self.t_count;
-        self.t_checksum = Wrapping(0);
+        self.total.0.fetch_add(self.t_checksum, Ordering::Relaxed);
+        self.total.1.fetch_add(self.t_count, Ordering::Relaxed);
+        self.t_checksum = 0;
         self.t_count = 0;
         Ok(())
     }
@@ -153,6 +151,8 @@ impl ParallelProcessor for VerifyProcessor {
 
 #[cfg(test)]
 mod tests {
+    use std::num::Wrapping;
+
     use binseq::BitSize;
 
     use super::*;
