@@ -1,4 +1,3 @@
-mod color;
 mod engine;
 mod filter;
 mod pattern_count;

@@ -1,8 +1,8 @@
 use crate::{
     cli::{FileFormat, Mate},
     commands::{
-        decode::{fill_qual, write_record_pair, SplitWriter},
-        grep::{color::write_colored_record_pair, Engine, SimpleRange, Spans},
+        decode::{fill_qual, Batch, SeqRead, SplitWriter},
+        grep::{Engine, SimpleRange, Spans},
     },
 };
 use binseq::prelude::*;
@@ -47,9 +47,7 @@ pub struct FilterProcessor {
     collect_spans: bool,
 
     /// Local write buffers
-    mixed: Vec<u8>, // General purpose, interleaved or singlets
-    left: Vec<u8>, // Used when writing pairs of files (R1/R2)
-    right: Vec<u8>,
+    batch: Batch,
 
     /// Quality buffers
     squal: Vec<u8>,
@@ -58,8 +56,6 @@ pub struct FilterProcessor {
     /// Write Options
     format: FileFormat,
     mate: Option<Mate>,
-    is_split: bool,
-    color: bool,
 
     /// Global values
     global_writer: Arc<Mutex<SplitWriter>>,
@@ -83,9 +79,7 @@ impl FilterProcessor {
         color: bool,
     ) -> Self {
         Self {
-            mixed: Vec::new(),
-            left: Vec::new(),
-            right: Vec::new(),
+            batch: Batch::new(&writer),
             squal: Vec::new(),
             xqual: Vec::new(),
             bits: engine.bitset(),
@@ -101,8 +95,6 @@ impl FilterProcessor {
             header,
             format,
             mate,
-            color,
-            is_split: writer.is_split(),
             global_writer: Arc::new(Mutex::new(writer)),
             local_count: 0,
             local_total: 0,
@@ -186,36 +178,22 @@ impl ParallelProcessor for FilterProcessor {
                 fill_qual(&mut self.xqual, xbuf.len())
             };
 
-            if self.color {
-                write_colored_record_pair(
-                    &mut self.mixed,
-                    self.mate,
-                    sbuf,
-                    squal,
-                    record.sheader(),
-                    xbuf,
-                    xqual,
-                    record.xheader(),
-                    &mut self.spans.primary,
-                    &mut self.spans.secondary,
-                    self.format,
-                )
-            } else {
-                write_record_pair(
-                    &mut self.left,
-                    &mut self.right,
-                    &mut self.mixed,
-                    self.mate.unwrap_or(Mate::One),
-                    self.is_split,
-                    sbuf,
-                    squal,
-                    record.sheader(),
-                    xbuf,
-                    xqual,
-                    record.xheader(),
-                    self.format,
-                )
-            }?;
+            self.batch.push_pair(
+                self.mate.unwrap_or(Mate::One),
+                SeqRead {
+                    header: record.sheader(),
+                    seq: sbuf,
+                    qual: squal,
+                },
+                SeqRead {
+                    header: record.xheader(),
+                    seq: xbuf,
+                    qual: xqual,
+                },
+                self.collect_spans
+                    .then_some([&mut self.spans.primary, &mut self.spans.secondary]),
+                self.format,
+            )?;
         }
 
         Ok(())
@@ -225,13 +203,11 @@ impl ParallelProcessor for FilterProcessor {
         // Lock the mutex to write to the global buffer
         if !self.count {
             let mut writer = self.global_writer.lock().unwrap();
-            writer.write_batch(&self.left, &self.right, &self.mixed)?;
+            writer.write_batch(&self.batch)?;
         }
 
         // Clear the local buffer and reset the local record count
-        self.mixed.clear();
-        self.left.clear();
-        self.right.clear();
+        self.batch.clear();
 
         // Increment the global count and reset local
         self.global_count
