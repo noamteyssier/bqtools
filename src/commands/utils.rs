@@ -34,19 +34,14 @@ pub fn make_directory<P: AsRef<Path>>(path: P) -> Result<()> {
 }
 
 pub fn match_output<P: AsRef<Path>>(path: Option<P>) -> Result<Box<dyn Write + Send>> {
-    if let Some(path) = path {
+    let inner: Box<dyn Write + Send> = if let Some(path) = path {
         trace!("Opening writer handle at: {}", path.as_ref().display());
-        let handle = File::create(path)?;
-        let buffer = BufWriter::new(handle);
-        let boxed = Box::new(buffer);
-        Ok(boxed)
+        Box::new(File::create(path)?)
     } else {
         trace!("Opening writer handle to stdout");
-        let handle = io::stdout();
-        let buffer = BufWriter::new(handle);
-        let boxed = Box::new(buffer);
-        Ok(boxed)
-    }
+        Box::new(io::stdout())
+    };
+    Ok(Box::new(BufWriter::new(inner)))
 }
 
 #[derive(Clone, Copy, Default, Debug, clap::ValueEnum)]
