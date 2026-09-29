@@ -4,6 +4,7 @@ use std::{
     path::Path,
 };
 
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, AhoCorasickKind};
 #[cfg(feature = "fuzzy")]
 use anyhow::bail;
 use anyhow::Result;
@@ -15,6 +16,18 @@ use gzp::{
 use log::trace;
 #[cfg(feature = "fuzzy")]
 use sassy::{profiles::Iupac, EncodedPatterns, Searcher};
+
+/// Builds a case-sensitive Aho-Corasick automaton (DFA unless `no_dfa`).
+pub fn corasick_builder(patterns: &[Vec<u8>], no_dfa: bool) -> Result<AhoCorasick> {
+    Ok(AhoCorasickBuilder::new()
+        .ascii_case_insensitive(false)
+        .kind(if no_dfa {
+            None
+        } else {
+            Some(AhoCorasickKind::DFA)
+        })
+        .build(patterns)?)
+}
 
 pub fn match_output<P: AsRef<Path>>(path: Option<P>) -> Result<Box<dyn Write + Send>> {
     let inner: Box<dyn Write + Send> = if let Some(path) = path {

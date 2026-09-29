@@ -6,16 +6,14 @@ use binseq::Result;
 use rand::{RngExt, SeedableRng};
 use std::sync::Mutex;
 
-use super::{fill_qual, write_record_pair, SplitWriter};
+use super::{fill_qual, Batch, SeqRead, SplitWriter};
 use crate::cli::{FileFormat, Mate};
 
 /// A struct for decoding BINSEQ data back to FASTQ format.
 #[derive(Clone)]
 pub struct Decoder {
     /// Local write buffers
-    mixed: Vec<u8>, // General purpose, interleaved or singlets
-    left: Vec<u8>, // Used when writing pairs of files (R1/R2)
-    right: Vec<u8>,
+    batch: Batch,
 
     /// Local count of records
     local_count: usize,
@@ -27,7 +25,6 @@ pub struct Decoder {
     /// Options
     format: FileFormat,
     mate: Mate,
-    is_split: bool,
     /// Optional `(fraction, seed)` keep-filter
     sample: Option<(f64, u64)>,
 
@@ -44,15 +41,12 @@ impl Decoder {
         sample: Option<(f64, u64)>,
     ) -> Self {
         Decoder {
-            mixed: Vec::new(),
-            left: Vec::new(),
-            right: Vec::new(),
+            batch: Batch::new(&writer),
             local_count: 0,
             squal: Vec::new(),
             xqual: Vec::new(),
             format,
             mate,
-            is_split: writer.is_split(),
             sample,
             global_writer: Arc::new(Mutex::new(writer)),
             num_records: Arc::new(AtomicUsize::new(0)),
@@ -92,18 +86,19 @@ impl ParallelProcessor for Decoder {
             fill_qual(&mut self.xqual, xbuf.len())
         };
 
-        write_record_pair(
-            &mut self.left,
-            &mut self.right,
-            &mut self.mixed,
+        self.batch.push_pair(
             self.mate,
-            self.is_split,
-            sbuf,
-            squal,
-            record.sheader(),
-            xbuf,
-            xqual,
-            record.xheader(),
+            SeqRead {
+                header: record.sheader(),
+                seq: sbuf,
+                qual: squal,
+            },
+            SeqRead {
+                header: record.xheader(),
+                seq: xbuf,
+                qual: xqual,
+            },
+            None,
             self.format,
         )?;
 
@@ -115,15 +110,13 @@ impl ParallelProcessor for Decoder {
         // Lock the mutex to write to the global buffer
         {
             let mut writer = self.global_writer.lock().unwrap();
-            writer.write_batch(&self.left, &self.right, &self.mixed)?;
+            writer.write_batch(&self.batch)?;
         }
         self.num_records
             .fetch_add(self.local_count, Ordering::Relaxed);
 
         // Clear the local buffer and reset the local record count
-        self.mixed.clear();
-        self.left.clear();
-        self.right.clear();
+        self.batch.clear();
         self.local_count = 0;
         Ok(())
     }

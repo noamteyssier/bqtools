@@ -3,7 +3,7 @@ mod utils;
 
 use crate::cli::{DecodeCommand, FileFormat, InputBinseq, Mate, OutputFile};
 pub use decode_binseq::Decoder;
-pub use utils::{fill_qual, write_record, write_record_pair, SplitWriter};
+pub use utils::{fill_qual, write_record, Batch, SeqRead, SplitWriter};
 
 use anyhow::{bail, Result};
 use binseq::prelude::*;
@@ -50,10 +50,7 @@ pub fn run_with(
         Mate::One
     };
     let proc = Decoder::new(writer, format, mate, sample);
-    let range = match input.span {
-        Some(span) => span.get_range(reader.num_records()?)?,
-        None => 0..reader.num_records()?,
-    };
+    let range = input.range(reader.num_records()?)?;
     reader.process_parallel_range(proc.clone(), output.threads(), range)?;
     Ok(proc)
 }

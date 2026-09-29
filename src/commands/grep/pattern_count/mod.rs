@@ -1,94 +1,114 @@
-mod regex_pc;
-pub use regex_pc::RegexPatternCounter;
+use fixedbitset::FixedBitSet;
 
-mod ac_pc;
-pub use ac_pc::AhoCorasickPatternCounter;
-
-#[cfg(feature = "fuzzy")]
-mod fuzzy_pc;
-#[cfg(feature = "fuzzy")]
-pub use fuzzy_pc::FuzzyPatternCounter;
+use super::{Engine, PatternSets};
 
 mod processor;
 pub use processor::PatternCountProcessor;
 
-use super::PatternCollection;
-
-pub trait PatternCount: Clone + Send + Sync {
-    /// Counts the number of patterns in the given primary and secondary strings.
-    ///
-    /// Increments those specific pattern counts.
-    ///
-    /// Pattern counts are assumed to equal to the number of patterns found in (primary-only, secondary-only, either) expressions.
-    /// The counts are indexed in that order in a single array.
-    fn count_patterns(&mut self, primary: &[u8], secondary: &[u8], pattern_count: &mut [usize]);
-
-    fn num_patterns(&self) -> usize;
-
-    fn pattern_strings(&self) -> Vec<String>;
-
-    /// Returns pattern names (FASTA headers if present, otherwise the pattern strings).
-    fn pattern_names(&self) -> Vec<String>;
-}
-
+/// Counts, per pattern, the records that contain it (or, inverted, do not).
+///
+/// Counts are indexed over the concatenated (primary-only, extended-only,
+/// either) pattern sets.
 #[derive(Clone)]
-pub enum PatternCounter {
-    Regex(RegexPatternCounter),
-    AhoCorasick(AhoCorasickPatternCounter),
-    #[cfg(feature = "fuzzy")]
-    Fuzzy(Box<FuzzyPatternCounter>),
+pub struct PatternCounter {
+    engine: Engine,
+    bits: FixedBitSet,
+    invert: bool,
+    names: Vec<String>,
 }
-impl PatternCount for PatternCounter {
-    fn count_patterns(&mut self, primary: &[u8], secondary: &[u8], pattern_count: &mut [usize]) {
-        match self {
-            PatternCounter::Regex(counter) => {
-                counter.count_patterns(primary, secondary, pattern_count);
-            }
-            PatternCounter::AhoCorasick(counter) => {
-                counter.count_patterns(primary, secondary, pattern_count);
-            }
-            #[cfg(feature = "fuzzy")]
-            PatternCounter::Fuzzy(counter) => {
-                counter.count_patterns(primary, secondary, pattern_count);
-            }
+impl PatternCounter {
+    pub fn new(engine: Engine, patterns: &PatternSets, invert: bool) -> Self {
+        Self {
+            bits: engine.bitset(),
+            engine,
+            invert,
+            names: patterns.names(),
         }
     }
 
-    fn num_patterns(&self) -> usize {
-        match self {
-            PatternCounter::Regex(counter) => counter.num_patterns(),
-            PatternCounter::AhoCorasick(counter) => counter.num_patterns(),
-            #[cfg(feature = "fuzzy")]
-            PatternCounter::Fuzzy(counter) => counter.num_patterns(),
+    /// Increments the count of every pattern found in the primary or secondary
+    /// sequence (every pattern not found, when inverted). A pattern counts once
+    /// per record however often it occurs.
+    pub fn count_patterns(
+        &mut self,
+        primary: &[u8],
+        secondary: &[u8],
+        pattern_count: &mut [usize],
+    ) {
+        self.bits.clear();
+        self.engine.hit(primary, secondary, &mut self.bits, None);
+        if self.invert {
+            self.bits.zeroes().for_each(|idx| pattern_count[idx] += 1);
+        } else {
+            self.bits.ones().for_each(|idx| pattern_count[idx] += 1);
         }
     }
 
-    fn pattern_strings(&self) -> Vec<String> {
-        match self {
-            PatternCounter::Regex(counter) => counter.pattern_strings(),
-            PatternCounter::AhoCorasick(counter) => counter.pattern_strings(),
-            #[cfg(feature = "fuzzy")]
-            PatternCounter::Fuzzy(counter) => counter.pattern_strings(),
-        }
+    pub fn num_patterns(&self) -> usize {
+        self.names.len()
     }
 
-    fn pattern_names(&self) -> Vec<String> {
-        match self {
-            PatternCounter::Regex(counter) => counter.pattern_names(),
-            PatternCounter::AhoCorasick(counter) => counter.pattern_names(),
-            #[cfg(feature = "fuzzy")]
-            PatternCounter::Fuzzy(counter) => counter.pattern_names(),
-        }
+    /// Pattern names (FASTA headers if present, otherwise the pattern strings).
+    pub fn pattern_names(&self) -> &[String] {
+        &self.names
     }
 }
 
 #[cfg(test)]
 mod pattern_count_tests {
-    use super::{AhoCorasickPatternCounter, PatternCount, RegexPatternCounter};
-    use crate::commands::grep::{Pattern, PatternCollection};
+    use anyhow::Result;
+
+    use super::PatternCounter;
+    use crate::commands::grep::{Engine, Pattern, PatternCollection, PatternSets};
+
+    fn counter(
+        engine: impl FnOnce(&PatternSets) -> Result<Engine>,
+        pat1: PatternCollection,
+        pat2: PatternCollection,
+        pat: PatternCollection,
+        invert: bool,
+    ) -> Result<PatternCounter> {
+        let sets = PatternSets { pat1, pat2, pat };
+        Ok(PatternCounter::new(engine(&sets)?, &sets, invert))
+    }
+
+    fn regex_counter(
+        pat1: PatternCollection,
+        pat2: PatternCollection,
+        pat: PatternCollection,
+        invert: bool,
+    ) -> Result<PatternCounter> {
+        counter(Engine::regex, pat1, pat2, pat, invert)
+    }
+
+    fn ac_counter(
+        pat1: PatternCollection,
+        pat2: PatternCollection,
+        pat: PatternCollection,
+        no_dfa: bool,
+        invert: bool,
+    ) -> Result<PatternCounter> {
+        counter(|s| Engine::aho_corasick(s, no_dfa), pat1, pat2, pat, invert)
+    }
 
     #[cfg(feature = "fuzzy")]
-    use super::FuzzyPatternCounter;
+    fn fuzzy_counter(
+        pat1: PatternCollection,
+        pat2: PatternCollection,
+        pat: PatternCollection,
+        k: usize,
+        inexact: bool,
+        invert: bool,
+        max_n_frac: Option<f32>,
+    ) -> Result<PatternCounter> {
+        counter(
+            |s| Engine::fuzzy(s, k, inexact, max_n_frac),
+            pat1,
+            pat2,
+            pat,
+            invert,
+        )
+    }
 
     fn pc(patterns: &[&[u8]]) -> PatternCollection {
         PatternCollection(
@@ -104,8 +124,7 @@ mod pattern_count_tests {
 
     #[test]
     fn test_regex_pattern_counter_single_pattern() {
-        let mut counter =
-            RegexPatternCounter::new(pc(&[b"AAAA"]), pc(&[]), pc(&[]), false).unwrap();
+        let mut counter = regex_counter(pc(&[b"AAAA"]), pc(&[]), pc(&[]), false).unwrap();
 
         assert_eq!(counter.num_patterns(), 1);
 
@@ -121,8 +140,7 @@ mod pattern_count_tests {
     #[test]
     fn test_regex_pattern_counter_multiple_patterns() {
         let mut counter =
-            RegexPatternCounter::new(pc(&[b"AAAA", b"TTTT", b"CCCC"]), pc(&[]), pc(&[]), false)
-                .unwrap();
+            regex_counter(pc(&[b"AAAA", b"TTTT", b"CCCC"]), pc(&[]), pc(&[]), false).unwrap();
 
         assert_eq!(counter.num_patterns(), 3);
 
@@ -139,8 +157,7 @@ mod pattern_count_tests {
 
     #[test]
     fn test_regex_pattern_counter_secondary() {
-        let mut counter =
-            RegexPatternCounter::new(pc(&[]), pc(&[b"TTTT"]), pc(&[]), false).unwrap();
+        let mut counter = regex_counter(pc(&[]), pc(&[b"TTTT"]), pc(&[]), false).unwrap();
 
         let primary = b"GGGGAAAACCCC";
         let secondary = b"GGGGTTTTCCCC";
@@ -153,8 +170,7 @@ mod pattern_count_tests {
 
     #[test]
     fn test_regex_pattern_counter_either() {
-        let mut counter =
-            RegexPatternCounter::new(pc(&[]), pc(&[]), pc(&[b"CCCC"]), false).unwrap();
+        let mut counter = regex_counter(pc(&[]), pc(&[]), pc(&[b"CCCC"]), false).unwrap();
 
         // Test match in primary
         let primary1 = b"GGGGCCCCTTTT";
@@ -180,8 +196,7 @@ mod pattern_count_tests {
 
     #[test]
     fn test_regex_pattern_counter_no_match() {
-        let mut counter =
-            RegexPatternCounter::new(pc(&[b"AAAA"]), pc(&[]), pc(&[]), false).unwrap();
+        let mut counter = regex_counter(pc(&[b"AAAA"]), pc(&[]), pc(&[]), false).unwrap();
 
         let primary = b"GGGGCCCCTTTT";
         let secondary = b"GGGGCCCCTTTT";
@@ -194,7 +209,7 @@ mod pattern_count_tests {
 
     #[test]
     fn test_regex_pattern_counter_invert() {
-        let mut counter = RegexPatternCounter::new(pc(&[b"AAAA"]), pc(&[]), pc(&[]), true).unwrap();
+        let mut counter = regex_counter(pc(&[b"AAAA"]), pc(&[]), pc(&[]), true).unwrap();
 
         // Sequence without pattern (should count when inverted)
         let primary1 = b"GGGGCCCCTTTT";
@@ -214,8 +229,7 @@ mod pattern_count_tests {
     #[test]
     fn test_regex_pattern_counter_combined_patterns() {
         let mut counter =
-            RegexPatternCounter::new(pc(&[b"AAAA"]), pc(&[b"TTTT"]), pc(&[b"CCCC"]), false)
-                .unwrap();
+            regex_counter(pc(&[b"AAAA"]), pc(&[b"TTTT"]), pc(&[b"CCCC"]), false).unwrap();
 
         assert_eq!(counter.num_patterns(), 3);
 
@@ -231,11 +245,10 @@ mod pattern_count_tests {
     }
 
     #[test]
-    fn test_regex_pattern_counter_pattern_strings() {
-        let counter =
-            RegexPatternCounter::new(pc(&[b"AAAA", b"TTTT"]), pc(&[]), pc(&[]), false).unwrap();
+    fn test_regex_pattern_counter_pattern_names() {
+        let counter = regex_counter(pc(&[b"AAAA", b"TTTT"]), pc(&[]), pc(&[]), false).unwrap();
 
-        let patterns = counter.pattern_strings();
+        let patterns = counter.pattern_names();
         assert_eq!(patterns.len(), 2);
         assert_eq!(patterns[0], "AAAA");
         assert_eq!(patterns[1], "TTTT");
@@ -243,8 +256,7 @@ mod pattern_count_tests {
 
     #[test]
     fn test_regex_pattern_counter_multiple_records() {
-        let mut counter =
-            RegexPatternCounter::new(pc(&[b"AAAA"]), pc(&[]), pc(&[]), false).unwrap();
+        let mut counter = regex_counter(pc(&[b"AAAA"]), pc(&[]), pc(&[]), false).unwrap();
 
         let mut counts = vec![0; counter.num_patterns()];
 
@@ -269,8 +281,7 @@ mod pattern_count_tests {
 
     #[test]
     fn test_regex_pattern_counter_empty_sequence() {
-        let mut counter =
-            RegexPatternCounter::new(pc(&[]), pc(&[b"AAAA"]), pc(&[]), false).unwrap();
+        let mut counter = regex_counter(pc(&[]), pc(&[b"AAAA"]), pc(&[]), false).unwrap();
 
         let primary = b"GGGGAAAATTTT";
         let secondary = b"";
@@ -285,8 +296,7 @@ mod pattern_count_tests {
     #[test]
     fn test_fuzzy_pattern_counter_single_pattern() {
         let mut counter =
-            FuzzyPatternCounter::new(pc(&[b"AAAAAAAA"]), pc(&[]), pc(&[]), 1, false, false, None)
-                .unwrap();
+            fuzzy_counter(pc(&[b"AAAAAAAA"]), pc(&[]), pc(&[]), 1, false, false, None).unwrap();
 
         assert_eq!(counter.num_patterns(), 1);
 
@@ -305,7 +315,7 @@ mod pattern_count_tests {
     #[cfg(feature = "fuzzy")]
     #[test]
     fn test_fuzzy_pattern_counter_default_max_n_frac_rejects_all_n_match() {
-        let mut counter = FuzzyPatternCounter::new(
+        let mut counter = fuzzy_counter(
             pc(&[b"ACGTACGTACGT"]),
             pc(&[]),
             pc(&[]),
@@ -330,7 +340,7 @@ mod pattern_count_tests {
     #[cfg(feature = "fuzzy")]
     #[test]
     fn test_fuzzy_pattern_counter_max_n_frac_override_allows_all_n_match() {
-        let mut counter = FuzzyPatternCounter::new(
+        let mut counter = fuzzy_counter(
             pc(&[b"ACGTACGTACGT"]),
             pc(&[]),
             pc(&[]),
@@ -355,7 +365,7 @@ mod pattern_count_tests {
     #[cfg(feature = "fuzzy")]
     #[test]
     fn test_fuzzy_pattern_counter_max_n_frac_explicit_zero_rejects_any_n() {
-        let mut counter = FuzzyPatternCounter::new(
+        let mut counter = fuzzy_counter(
             pc(&[b"AAAAAAAA"]),
             pc(&[]),
             pc(&[]),
@@ -390,7 +400,7 @@ mod pattern_count_tests {
     #[cfg(feature = "fuzzy")]
     #[test]
     fn test_fuzzy_pattern_counter_rejects_mismatched_pattern_lengths_primary() {
-        let result = FuzzyPatternCounter::new(
+        let result = fuzzy_counter(
             pc(&[b"AAAA", b"AAAAA"]),
             pc(&[]),
             pc(&[]),
@@ -408,7 +418,7 @@ mod pattern_count_tests {
     #[cfg(feature = "fuzzy")]
     #[test]
     fn test_fuzzy_pattern_counter_rejects_mismatched_pattern_lengths_secondary() {
-        let result = FuzzyPatternCounter::new(
+        let result = fuzzy_counter(
             pc(&[]),
             pc(&[b"AAAA", b"AAAAA"]),
             pc(&[]),
@@ -426,7 +436,7 @@ mod pattern_count_tests {
     #[cfg(feature = "fuzzy")]
     #[test]
     fn test_fuzzy_pattern_counter_rejects_mismatched_pattern_lengths_either() {
-        let result = FuzzyPatternCounter::new(
+        let result = fuzzy_counter(
             pc(&[]),
             pc(&[]),
             pc(&[b"AAAA", b"AAAAA"]),
@@ -444,7 +454,7 @@ mod pattern_count_tests {
     #[cfg(feature = "fuzzy")]
     #[test]
     fn test_fuzzy_pattern_counter_accepts_uniform_pattern_lengths() {
-        let result = FuzzyPatternCounter::new(
+        let result = fuzzy_counter(
             pc(&[b"AAAA", b"TTTT", b"CCCC"]),
             pc(&[]),
             pc(&[]),
@@ -460,8 +470,7 @@ mod pattern_count_tests {
     #[test]
     fn test_fuzzy_pattern_counter_with_mismatches() {
         let mut counter =
-            FuzzyPatternCounter::new(pc(&[b"AAAAAAAA"]), pc(&[]), pc(&[]), 2, false, false, None)
-                .unwrap();
+            fuzzy_counter(pc(&[b"AAAAAAAA"]), pc(&[]), pc(&[]), 2, false, false, None).unwrap();
 
         // Exact match
         let primary1 = b"GGGGAAAAAAAATTTT";
@@ -489,8 +498,7 @@ mod pattern_count_tests {
     #[test]
     fn test_fuzzy_pattern_counter_inexact_only() {
         let mut counter =
-            FuzzyPatternCounter::new(pc(&[b"AAAAAAAA"]), pc(&[]), pc(&[]), 2, true, false, None)
-                .unwrap();
+            fuzzy_counter(pc(&[b"AAAAAAAA"]), pc(&[]), pc(&[]), 2, true, false, None).unwrap();
 
         // Exact match (should not count with inexact_only)
         let primary1 = b"GGGGAAAAAAAATTTT";
@@ -514,8 +522,7 @@ mod pattern_count_tests {
     #[test]
     fn test_fuzzy_pattern_counter_invert() {
         let mut counter =
-            FuzzyPatternCounter::new(pc(&[b"AAAAAAAA"]), pc(&[]), pc(&[]), 1, false, true, None)
-                .unwrap();
+            fuzzy_counter(pc(&[b"AAAAAAAA"]), pc(&[]), pc(&[]), 1, false, true, None).unwrap();
 
         // Sequence without pattern (should count when inverted)
         let primary1 = b"GGGGCCCCTTTT";
@@ -535,7 +542,7 @@ mod pattern_count_tests {
     #[cfg(feature = "fuzzy")]
     #[test]
     fn test_fuzzy_pattern_counter_multiple_patterns() {
-        let mut counter = FuzzyPatternCounter::new(
+        let mut counter = fuzzy_counter(
             pc(&[b"AAAAAAAA", b"TTTTTTTT", b"CCCCCCCC"]),
             pc(&[]),
             pc(&[]),
@@ -563,8 +570,7 @@ mod pattern_count_tests {
     #[test]
     fn test_fuzzy_pattern_counter_secondary() {
         let mut counter =
-            FuzzyPatternCounter::new(pc(&[]), pc(&[b"TTTTTTTT"]), pc(&[]), 1, false, false, None)
-                .unwrap();
+            fuzzy_counter(pc(&[]), pc(&[b"TTTTTTTT"]), pc(&[]), 1, false, false, None).unwrap();
 
         let primary = b"GGGGAAAACCCC";
         let secondary = b"GGGGTTTTTTTTCCCC";
@@ -579,8 +585,7 @@ mod pattern_count_tests {
     #[test]
     fn test_fuzzy_pattern_counter_either() {
         let mut counter =
-            FuzzyPatternCounter::new(pc(&[]), pc(&[]), pc(&[b"CCCCCCCC"]), 1, false, false, None)
-                .unwrap();
+            fuzzy_counter(pc(&[]), pc(&[]), pc(&[b"CCCCCCCC"]), 1, false, false, None).unwrap();
 
         // Test match in primary
         let primary1 = b"GGGGCCCCCCCCTTTT";
@@ -599,8 +604,8 @@ mod pattern_count_tests {
 
     #[cfg(feature = "fuzzy")]
     #[test]
-    fn test_fuzzy_pattern_counter_pattern_strings() {
-        let counter = FuzzyPatternCounter::new(
+    fn test_fuzzy_pattern_counter_pattern_names() {
+        let counter = fuzzy_counter(
             pc(&[b"AAAAAAAA", b"TTTTTTTT"]),
             pc(&[]),
             pc(&[]),
@@ -611,7 +616,7 @@ mod pattern_count_tests {
         )
         .unwrap();
 
-        let patterns = counter.pattern_strings();
+        let patterns = counter.pattern_names();
         assert_eq!(patterns.len(), 2);
         assert_eq!(patterns[0], "AAAAAAAA");
         assert_eq!(patterns[1], "TTTTTTTT");
@@ -621,8 +626,7 @@ mod pattern_count_tests {
     #[test]
     fn test_fuzzy_pattern_counter_edit_distance_zero() {
         let mut counter =
-            FuzzyPatternCounter::new(pc(&[b"AAAAAAAA"]), pc(&[]), pc(&[]), 0, false, false, None)
-                .unwrap();
+            fuzzy_counter(pc(&[b"AAAAAAAA"]), pc(&[]), pc(&[]), 0, false, false, None).unwrap();
 
         // Exact match (should count)
         let primary1 = b"GGGGAAAAAAAATTTT";
@@ -641,8 +645,7 @@ mod pattern_count_tests {
 
     #[test]
     fn test_aho_corasick_pattern_counter_single_pattern() {
-        let mut counter =
-            AhoCorasickPatternCounter::new(pc(&[b"AAAA"]), pc(&[]), pc(&[]), false, false).unwrap();
+        let mut counter = ac_counter(pc(&[b"AAAA"]), pc(&[]), pc(&[]), false, false).unwrap();
 
         assert_eq!(counter.num_patterns(), 1);
 
@@ -657,7 +660,7 @@ mod pattern_count_tests {
 
     #[test]
     fn test_aho_corasick_pattern_counter_multiple_patterns() {
-        let mut counter = AhoCorasickPatternCounter::new(
+        let mut counter = ac_counter(
             pc(&[b"AAAA", b"TTTT", b"CCCC"]),
             pc(&[]),
             pc(&[]),
@@ -681,8 +684,7 @@ mod pattern_count_tests {
 
     #[test]
     fn test_aho_corasick_pattern_counter_secondary() {
-        let mut counter =
-            AhoCorasickPatternCounter::new(pc(&[]), pc(&[b"TTTT"]), pc(&[]), false, false).unwrap();
+        let mut counter = ac_counter(pc(&[]), pc(&[b"TTTT"]), pc(&[]), false, false).unwrap();
 
         let primary = b"GGGGAAAACCCC";
         let secondary = b"GGGGTTTTCCCC";
@@ -695,8 +697,7 @@ mod pattern_count_tests {
 
     #[test]
     fn test_aho_corasick_pattern_counter_either() {
-        let mut counter =
-            AhoCorasickPatternCounter::new(pc(&[]), pc(&[]), pc(&[b"CCCC"]), false, false).unwrap();
+        let mut counter = ac_counter(pc(&[]), pc(&[]), pc(&[b"CCCC"]), false, false).unwrap();
 
         // Test match in primary
         let primary1 = b"GGGGCCCCTTTT";
@@ -722,8 +723,7 @@ mod pattern_count_tests {
 
     #[test]
     fn test_aho_corasick_pattern_counter_no_match() {
-        let mut counter =
-            AhoCorasickPatternCounter::new(pc(&[b"AAAA"]), pc(&[]), pc(&[]), false, false).unwrap();
+        let mut counter = ac_counter(pc(&[b"AAAA"]), pc(&[]), pc(&[]), false, false).unwrap();
 
         let primary = b"GGGGCCCCTTTT";
         let secondary = b"GGGGCCCCTTTT";
@@ -736,8 +736,7 @@ mod pattern_count_tests {
 
     #[test]
     fn test_aho_corasick_pattern_counter_invert() {
-        let mut counter =
-            AhoCorasickPatternCounter::new(pc(&[b"AAAA"]), pc(&[]), pc(&[]), false, true).unwrap();
+        let mut counter = ac_counter(pc(&[b"AAAA"]), pc(&[]), pc(&[]), false, true).unwrap();
 
         // Sequence without pattern (should count when inverted)
         let primary1 = b"GGGGCCCCTTTT";
@@ -756,14 +755,8 @@ mod pattern_count_tests {
 
     #[test]
     fn test_aho_corasick_pattern_counter_combined_patterns() {
-        let mut counter = AhoCorasickPatternCounter::new(
-            pc(&[b"AAAA"]),
-            pc(&[b"TTTT"]),
-            pc(&[b"CCCC"]),
-            false,
-            false,
-        )
-        .unwrap();
+        let mut counter =
+            ac_counter(pc(&[b"AAAA"]), pc(&[b"TTTT"]), pc(&[b"CCCC"]), false, false).unwrap();
 
         assert_eq!(counter.num_patterns(), 3);
 
@@ -779,12 +772,10 @@ mod pattern_count_tests {
     }
 
     #[test]
-    fn test_aho_corasick_pattern_counter_pattern_strings() {
-        let counter =
-            AhoCorasickPatternCounter::new(pc(&[b"AAAA", b"TTTT"]), pc(&[]), pc(&[]), false, false)
-                .unwrap();
+    fn test_aho_corasick_pattern_counter_pattern_names() {
+        let counter = ac_counter(pc(&[b"AAAA", b"TTTT"]), pc(&[]), pc(&[]), false, false).unwrap();
 
-        let patterns = counter.pattern_strings();
+        let patterns = counter.pattern_names();
         assert_eq!(patterns.len(), 2);
         assert_eq!(patterns[0], "AAAA");
         assert_eq!(patterns[1], "TTTT");
@@ -792,8 +783,7 @@ mod pattern_count_tests {
 
     #[test]
     fn test_aho_corasick_pattern_counter_multiple_records() {
-        let mut counter =
-            AhoCorasickPatternCounter::new(pc(&[b"AAAA"]), pc(&[]), pc(&[]), false, false).unwrap();
+        let mut counter = ac_counter(pc(&[b"AAAA"]), pc(&[]), pc(&[]), false, false).unwrap();
 
         let mut counts = vec![0; counter.num_patterns()];
 
@@ -818,8 +808,7 @@ mod pattern_count_tests {
 
     #[test]
     fn test_aho_corasick_pattern_counter_empty_sequence() {
-        let mut counter =
-            AhoCorasickPatternCounter::new(pc(&[]), pc(&[b"AAAA"]), pc(&[]), false, false).unwrap();
+        let mut counter = ac_counter(pc(&[]), pc(&[b"AAAA"]), pc(&[]), false, false).unwrap();
 
         let primary = b"GGGGAAAATTTT";
         let secondary = b"";
@@ -833,8 +822,7 @@ mod pattern_count_tests {
     #[test]
     fn test_aho_corasick_pattern_counter_overlapping_patterns() {
         let mut counter =
-            AhoCorasickPatternCounter::new(pc(&[b"AAA", b"AAAA"]), pc(&[]), pc(&[]), false, false)
-                .unwrap();
+            ac_counter(pc(&[b"AAA", b"AAAA"]), pc(&[]), pc(&[]), false, false).unwrap();
 
         let primary = b"GGGGAAAAATTTT";
         let secondary = b"";
@@ -849,8 +837,7 @@ mod pattern_count_tests {
     #[test]
     fn test_aho_corasick_pattern_counter_multiple_occurrences() {
         let mut counter =
-            AhoCorasickPatternCounter::new(pc(&[b"AAA", b"AAAA"]), pc(&[]), pc(&[]), false, false)
-                .unwrap();
+            ac_counter(pc(&[b"AAA", b"AAAA"]), pc(&[]), pc(&[]), false, false).unwrap();
 
         let primary = b"GGGGAAAAATTTT";
         let secondary = b"";
@@ -865,8 +852,7 @@ mod pattern_count_tests {
 
     #[test]
     fn test_aho_corasick_pattern_counter_case_sensitive() {
-        let mut counter =
-            AhoCorasickPatternCounter::new(pc(&[b"aaaa"]), pc(&[]), pc(&[]), false, false).unwrap();
+        let mut counter = ac_counter(pc(&[b"aaaa"]), pc(&[]), pc(&[]), false, false).unwrap();
 
         // Different case should not match
         let primary = b"GGGGAAAATTTT";

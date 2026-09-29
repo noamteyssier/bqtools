@@ -1,218 +1,85 @@
-mod color;
+mod engine;
 mod filter;
 mod pattern_count;
 mod patterns;
 mod range;
 
-#[cfg(feature = "fuzzy")]
-use filter::FuzzyMatcher;
-use log::{error, warn};
-#[cfg(feature = "fuzzy")]
-use pattern_count::FuzzyPatternCounter;
-
-use filter::{FilterProcessor, PatternMatcher, RegexMatcher};
-use pattern_count::{
-    AhoCorasickPatternCounter, PatternCount, PatternCountProcessor, PatternCounter,
-    RegexPatternCounter,
-};
-use patterns::is_fixed;
-pub use patterns::{Pattern, PatternCollection};
+pub use engine::{Engine, Spans};
+use filter::FilterProcessor;
+use pattern_count::{PatternCountProcessor, PatternCounter};
+pub use patterns::{Pattern, PatternCollection, PatternSets};
 pub use range::SimpleRange;
 
 use super::decode::build_writer;
 use crate::{
     cli::{FileFormat, GrepCommand, Mate},
-    commands::{decode::SplitWriter, grep::filter::AhoCorasickMatcher},
+    commands::decode::SplitWriter,
 };
 
 use anyhow::{bail, Result};
 use binseq::prelude::*;
 
-/// Returns true if all patterns across multiple sets are fixed DNA strings.
-pub fn all_patterns_fixed(pattern_sets: &[&PatternCollection]) -> bool {
-    pattern_sets
-        .iter()
-        .flat_map(|s| s.iter())
-        .all(|p| is_fixed(&p.sequence))
-}
-
-/// Handles pattern mates by clearing and ingesting patterns into the appropriate collections.
-///
-/// This is relevant when using the `--mate` option, and enforces that no matches can occur on an ignored mate.
-fn redistribute_patterns(
-    pat1: &mut PatternCollection,
-    pat2: &mut PatternCollection,
-    pat: &mut PatternCollection,
-    mate: Mate,
-) -> Result<()> {
-    match mate {
-        Mate::Both => {
-            // Do nothing - both mates are used
-        }
-        Mate::One => {
-            pat2.clear(); // remove existing patterns from mate 2
-            pat1.ingest(pat); // take patterns from both and apply only to mate 1
-            if pat1.is_empty() {
-                error!("No patterns provided for mate 1");
-                bail!("No patterns provided for mate 1");
-            }
-        }
-        Mate::Two => {
-            pat1.clear(); // remove existing patterns from mate 1
-            pat2.ingest(pat); // take patterns from both and apply only to mate 2
-            if pat2.is_empty() {
-                error!("No patterns provided for mate 2");
-                bail!("No patterns provided for mate 2");
-            }
-        }
-    }
-    Ok(())
-}
-
-fn load_patterns(args: &GrepCommand, paired: bool) -> Result<AllPatterns> {
-    let mut pat1 = args.grep.patterns_m1()?;
-    let mut pat2 = args.grep.patterns_m2()?;
-    let mut pat = args.grep.patterns()?;
+fn load_patterns(args: &GrepCommand, paired: bool) -> Result<PatternSets> {
+    let mut patterns = PatternSets {
+        pat1: args.grep.patterns_m1()?,
+        pat2: args.grep.patterns_m2()?,
+        pat: args.grep.patterns()?,
+    };
     // `--mate` is meaningless on single-end files (and `-m 2` would route every
-    // pattern to the empty extended sequence).
+    // pattern to the empty extended sequence), and extended-only patterns can
+    // never match, so single-end input never carries an extended pattern set.
     if paired {
-        redistribute_patterns(&mut pat1, &mut pat2, &mut pat, args.output.mate)?;
+        patterns.redistribute(args.output.mate)?;
+    } else if !patterns.pat2.is_empty() {
+        bail!("-R/--xfile patterns require paired input");
     }
     if args.grep.rc {
-        pat1.reverse_complement()?;
-        pat2.reverse_complement()?;
-        pat.reverse_complement()?;
+        patterns.reverse_complement()?;
     }
-    Ok(AllPatterns { pat1, pat2, pat })
+    Ok(patterns)
 }
 
-struct AllPatterns {
-    pat1: PatternCollection,
-    pat2: PatternCollection,
-    pat: PatternCollection,
-}
-impl AllPatterns {
-    pub fn are_fixed(&self) -> bool {
-        all_patterns_fixed(&[&self.pat1, &self.pat2, &self.pat])
-    }
-
-    /// Total number of patterns across all three collections. AND vs OR
-    /// logic only changes behavior when combining 2+ patterns, so callers
-    /// use this to avoid treating AND logic as active for a single pattern.
-    pub fn total_len(&self) -> usize {
-        self.pat1.len() + self.pat2.len() + self.pat.len()
-    }
-}
-
-fn build_counter(args: &GrepCommand, paired: bool) -> Result<PatternCounter> {
+/// `and_logic` (all patterns must hit) only applies to plain grep, not `-P`.
+fn build_engine(args: &GrepCommand, patterns: &PatternSets, and_logic: bool) -> Result<Engine> {
     #[cfg(feature = "fuzzy")]
     if args.grep.fuzzy_args.fuzzy {
-        let patterns = load_patterns(args, paired)?;
-        let counter = FuzzyPatternCounter::new(
-            patterns.pat1,
-            patterns.pat2,
-            patterns.pat,
+        return Engine::fuzzy(
+            patterns,
             args.grep.fuzzy_args.distance,
             args.grep.fuzzy_args.inexact,
-            args.grep.invert,
             args.grep.fuzzy_args.max_n_frac,
-        )?;
-        return Ok(PatternCounter::Fuzzy(Box::new(counter)));
+        );
     }
-
-    let patterns = load_patterns(args, paired)?;
-    let use_fixed = args.grep.fixed || patterns.are_fixed();
-    if !args.grep.fixed && use_fixed {
-        log::debug!("All patterns are fixed strings — auto-selecting Aho-Corasick");
-    }
-
-    if use_fixed {
-        let counter = AhoCorasickPatternCounter::new(
-            patterns.pat1,
-            patterns.pat2,
-            patterns.pat,
-            args.grep.no_dfa,
-            args.grep.invert,
-        )?;
-        Ok(PatternCounter::AhoCorasick(counter))
+    if patterns.use_fixed(args.grep.fixed) {
+        if and_logic {
+            // ponytail: the regex crate's literal search beats aho-corasick's
+            // overlapping scan for the few patterns AND is used with; switch
+            // back if AND over hundreds of fixed patterns matters
+            Engine::regex(&patterns.escaped()?)
+        } else {
+            Engine::aho_corasick(patterns, args.grep.no_dfa)
+        }
     } else {
-        let counter =
-            RegexPatternCounter::new(patterns.pat1, patterns.pat2, patterns.pat, args.grep.invert)?;
-        Ok(PatternCounter::Regex(counter))
+        Engine::regex(patterns)
     }
 }
 
 fn run_pattern_count(args: &GrepCommand, reader: BinseqReader) -> Result<()> {
-    let counter = build_counter(args, reader.is_paired())?;
-    let pattern_names = counter.pattern_names();
-    let proc =
-        PatternCountProcessor::new(counter, args.grep.range, args.grep.header, pattern_names);
-    if let Some(span) = args.input.span {
-        let num_records = reader.num_records()?;
-        reader.process_parallel_range(
-            proc.clone(),
-            args.output.threads(),
-            span.get_range(num_records)?,
-        )?;
-    } else {
-        reader.process_parallel(proc.clone(), args.output.threads())?;
-    }
+    let patterns = load_patterns(args, reader.is_paired())?;
+    let counter = PatternCounter::new(
+        build_engine(args, &patterns, false)?,
+        &patterns,
+        args.grep.invert,
+    );
+    let proc = PatternCountProcessor::new(
+        counter,
+        args.grep.range.unwrap_or_default(),
+        args.grep.header,
+    );
+    let range = args.input.range(reader.num_records()?)?;
+    reader.process_parallel_range(proc.clone(), args.output.threads(), range)?;
     proc.pprint_pattern_counts()?;
     Ok(())
-}
-
-/// Builds the pattern matcher, plus the effective AND-logic flag to use with
-/// it. AND vs OR only changes behavior when combining 2+ patterns, so with
-/// a single pattern AND logic is downgraded to OR — this keeps Aho-Corasick
-/// eligible (it doesn't implement AND) and matches the returned matcher to
-/// the logic value callers must pass alongside it.
-fn build_matcher(args: &GrepCommand, paired: bool) -> Result<(PatternMatcher, bool)> {
-    #[cfg(feature = "fuzzy")]
-    if args.grep.fuzzy_args.fuzzy {
-        let patterns = load_patterns(args, paired)?;
-        let and_logic = args.grep.and_logic() && patterns.total_len() > 1;
-        let matcher = FuzzyMatcher::new(
-            &patterns.pat1.bytes(),
-            &patterns.pat2.bytes(),
-            &patterns.pat.bytes(),
-            args.grep.fuzzy_args.distance,
-            args.grep.fuzzy_args.inexact,
-            args.grep.range.map_or(0, |r| r.offset()),
-            args.grep.fuzzy_args.max_n_frac,
-        )?;
-        return Ok((PatternMatcher::Fuzzy(Box::new(matcher)), and_logic));
-    }
-
-    let patterns = load_patterns(args, paired)?;
-    let use_fixed = args.grep.fixed || patterns.are_fixed();
-    if !args.grep.fixed && use_fixed {
-        log::debug!("All patterns are fixed strings — auto-selecting Aho-Corasick");
-    }
-
-    // AND vs OR logic is only meaningful when combining 2+ patterns.
-    let and_logic = args.grep.and_logic() && patterns.total_len() > 1;
-
-    if use_fixed && !and_logic {
-        let matcher = AhoCorasickMatcher::new(
-            &patterns.pat1.bytes(),
-            &patterns.pat2.bytes(),
-            &patterns.pat.bytes(),
-            args.grep.no_dfa,
-            args.grep.range.map_or(0, |r| r.offset()),
-        )?;
-        Ok((PatternMatcher::AhoCorasick(matcher), and_logic))
-    } else {
-        if use_fixed {
-            warn!("`-x/--fixed provided but ignored when using AND logic");
-        }
-        let matcher = RegexMatcher::new(
-            patterns.pat1.regexes()?,
-            patterns.pat2.regexes()?,
-            patterns.pat.regexes()?,
-            args.grep.range.map_or(0, |r| r.offset()),
-        );
-        Ok((PatternMatcher::Regex(matcher), and_logic))
-    }
 }
 
 fn run_grep(
@@ -223,14 +90,16 @@ fn run_grep(
     mate: Option<Mate>,
 ) -> Result<()> {
     let count = args.grep.count || args.grep.frac;
-    let (matcher, and_logic) = build_matcher(args, reader.is_paired())?;
+    let patterns = load_patterns(args, reader.is_paired())?;
+    // AND vs OR logic is only meaningful when combining 2+ patterns
+    let and_logic = args.grep.and_logic() && patterns.len() > 1;
     let proc = FilterProcessor::new(
-        matcher,
+        build_engine(args, &patterns, and_logic)?,
         and_logic,
         args.grep.invert,
         count,
         args.grep.frac,
-        args.grep.range,
+        args.grep.range.unwrap_or_default(),
         args.grep.header,
         writer,
         format,
@@ -238,16 +107,8 @@ fn run_grep(
         args.should_color(),
     );
 
-    if let Some(span) = args.input.span {
-        let num_records = reader.num_records()?;
-        reader.process_parallel_range(
-            proc.clone(),
-            args.output.threads(),
-            span.get_range(num_records)?,
-        )?;
-    } else {
-        reader.process_parallel(proc.clone(), args.output.threads())?;
-    }
+    let range = args.input.range(reader.num_records()?)?;
+    reader.process_parallel_range(proc.clone(), args.output.threads(), range)?;
     if count {
         proc.pprint_counts();
     }
@@ -685,123 +546,5 @@ mod tests {
             argv.push("-z");
             assert!(crate::cli::GrepCommand::try_parse_from(&argv).is_ok());
         }
-    }
-}
-
-#[cfg(test)]
-mod fixed_detection_tests {
-    use crate::commands::grep::redistribute_patterns;
-
-    use super::{all_patterns_fixed, is_fixed, Mate, Pattern, PatternCollection};
-
-    fn pc(patterns: &[&[u8]]) -> PatternCollection {
-        PatternCollection(
-            patterns
-                .iter()
-                .map(|p| Pattern {
-                    name: None,
-                    sequence: p.to_vec(),
-                })
-                .collect(),
-        )
-    }
-
-    #[test]
-    fn test_fixed_dna_strings() {
-        assert!(is_fixed(b"ACGTACGT"));
-        assert!(is_fixed(b"AAAAAAAAAA"));
-        assert!(is_fixed(b"ACGT"));
-    }
-
-    #[test]
-    fn test_empty_string() {
-        assert!(!is_fixed(b""));
-    }
-
-    #[test]
-    fn test_iupac_ambiguity_codes() {
-        assert!(!is_fixed(b"ACGTNRYW"));
-        assert!(!is_fixed(b"ACGN"));
-    }
-
-    #[test]
-    fn test_lowercase_not_fixed() {
-        assert!(!is_fixed(b"acgt"));
-    }
-
-    #[test]
-    fn test_regex_patterns_not_fixed() {
-        assert!(!is_fixed(b"AC.GT"));
-        assert!(!is_fixed(b"AC[GT]"));
-        assert!(!is_fixed(b"A{3}"));
-        assert!(!is_fixed(b"^ACGT"));
-        assert!(!is_fixed(b"ACG|TGA"));
-        assert!(!is_fixed(b"(ACG)"));
-        assert!(!is_fixed(b"AC\\dGT"));
-    }
-
-    #[test]
-    fn test_all_patterns_fixed() {
-        let p1 = pc(&[b"ACGT", b"TTTT"]);
-        let p2 = pc(&[b"GGGG"]);
-        assert!(all_patterns_fixed(&[&p1, &p2]));
-    }
-
-    #[test]
-    fn test_all_patterns_fixed_with_regex() {
-        let p1 = pc(&[b"ACGT", b"AC.GT"]);
-        let p2 = pc(&[b"GGGG"]);
-        assert!(!all_patterns_fixed(&[&p1, &p2]));
-    }
-
-    #[test]
-    fn test_all_patterns_fixed_empty_sets() {
-        let p1 = pc(&[]);
-        let p2 = pc(&[]);
-        assert!(all_patterns_fixed(&[&p1, &p2]));
-    }
-
-    #[test]
-    #[allow(clippy::similar_names)]
-    fn test_redistribution_noop() {
-        let mut pat1 = pc(&[b"ACGT", b"TTTT"]);
-        let mut pat2 = pc(&[b"GGGG"]);
-        let mut pat = pc(&[b"AC.GT"]);
-
-        let pat1_clone = pat1.clone();
-        let pat2_clone = pat2.clone();
-        let either_clone = pat.clone();
-
-        redistribute_patterns(&mut pat1, &mut pat2, &mut pat, Mate::Both).unwrap();
-
-        assert_eq!(pat1, pat1_clone);
-        assert_eq!(pat2, pat2_clone);
-        assert_eq!(pat, either_clone);
-    }
-
-    #[test]
-    fn test_redistribution_m1() {
-        let mut pat1 = pc(&[b"ACGT", b"TTTT"]);
-        let mut pat2 = pc(&[b"GGGG"]);
-        let mut pat = pc(&[b"AC.GT"]);
-
-        redistribute_patterns(&mut pat1, &mut pat2, &mut pat, Mate::One).unwrap();
-
-        assert_eq!(pat1, pc(&[b"ACGT", b"TTTT", b"AC.GT"]));
-        assert!(pat2.is_empty());
-        assert!(pat.is_empty());
-    }
-
-    #[test]
-    fn test_redistribution_m2() {
-        let mut pat1 = pc(&[b"ACGT", b"TTTT"]);
-        let mut pat2 = pc(&[b"GGGG"]);
-        let mut pat = pc(&[b"AC.GT"]);
-
-        redistribute_patterns(&mut pat1, &mut pat2, &mut pat, Mate::Two).unwrap();
-
-        assert!(pat1.is_empty());
-        assert_eq!(pat2, pc(&[b"GGGG", b"AC.GT"]));
-        assert!(pat.is_empty());
     }
 }

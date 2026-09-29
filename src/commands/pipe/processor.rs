@@ -12,7 +12,7 @@ use super::RecordPair;
 use crate::{
     cli::FileFormat,
     commands::{
-        decode::{fill_qual, write_record},
+        decode::{fill_qual, write_record, SeqRead},
         pipe::utils::name_fifo,
     },
 };
@@ -58,7 +58,12 @@ impl ParallelProcessor for PipeProcessor {
         };
         // handle missing quality if record has no quality
         let qual = qual.unwrap_or_else(|| fill_qual(&mut self.fallback, len));
-        write_record(&mut self.local, header, seq, qual, self.format)?;
+        write_record(
+            &mut self.local,
+            SeqRead { header, seq, qual },
+            None,
+            self.format,
+        )?;
         Ok(())
     }
     fn on_batch_complete(&mut self) -> binseq::Result<()> {

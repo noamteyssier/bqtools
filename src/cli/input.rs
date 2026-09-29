@@ -233,6 +233,12 @@ impl InputBinseq {
         &self.input
     }
 
+    /// Records selected by `--span` (all `num_records` when unset).
+    pub fn range(&self, num_records: usize) -> Result<std::ops::Range<usize>> {
+        self.span
+            .map_or(Ok(0..num_records), |span| span.get_range(num_records))
+    }
+
     pub fn mode(&self) -> Result<BinseqMode> {
         let reader = BinseqReader::new(&self.input)?;
         match reader {
@@ -257,7 +263,7 @@ pub struct Span {
     end: Option<usize>,
 }
 impl Span {
-    pub fn get_range(&self, max_records: usize) -> Result<std::ops::Range<usize>> {
+    fn get_range(&self, max_records: usize) -> Result<std::ops::Range<usize>> {
         let start = self.start.unwrap_or(0);
         if start > max_records {
             error!("Provided start ({start}) exceeds maximum number of records ({max_records})");

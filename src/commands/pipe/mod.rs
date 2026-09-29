@@ -4,7 +4,7 @@ pub mod utils;
 
 use std::thread;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use binseq::BinseqReader;
 use log::info;
 
@@ -33,14 +33,10 @@ pub enum PairedChannels {
 }
 
 pub fn run(args: &PipeCommand) -> Result<()> {
-    if args.input.span.is_some() {
-        bail!("--span is not supported by the pipe subcommand");
-    }
-
     let opts = &args.pipe;
     let format = opts.format;
     let reader = BinseqReader::new(args.input.path())?;
-    let num_records = reader.num_records()?;
+    let span = args.input.range(reader.num_records()?)?;
     let paired = reader.is_paired();
     let num_pipes = if paired {
         (args.num_pipes() / 2).max(1)
@@ -74,7 +70,7 @@ pub fn run(args: &PipeCommand) -> Result<()> {
         fifo_guard.0.len()
     );
 
-    let records_per_pipe = num_records / num_pipes;
+    let records_per_pipe = span.len() / num_pipes;
 
     // Spawn consumer processes before writer threads: opening a FIFO for writing
     // blocks until a reader connects, so readers must be in-flight first.
@@ -89,9 +85,9 @@ pub fn run(args: &PipeCommand) -> Result<()> {
     // Named pipes block on open until both reader and writer connect.
     let mut handles = Vec::new();
     for pid in 0..num_pipes {
-        let rstart = records_per_pipe * pid;
+        let rstart = span.start + records_per_pipe * pid;
         let rend = if pid == num_pipes - 1 {
-            num_records
+            span.end
         } else {
             rstart + records_per_pipe
         };
@@ -209,6 +205,34 @@ mod tests {
             DEFAULT_NUM_RECORDS,
             "record count mismatch for single-end -x"
         );
+        Ok(())
+    }
+
+    /// `--span` restricts the records piped, shared out across the FIFOs.
+    #[test]
+    fn test_pipe_span() -> Result<()> {
+        let cbq = single_cbq()?;
+
+        let fifo_dir = tempfile::tempdir()?;
+        let basepath = basepath(&fifo_dir);
+        let out = NamedTempFile::with_suffix(".fastq")?;
+        let out_path = out.path().to_str().unwrap().to_string();
+
+        let cmd = crate::cli::PipeCommand::try_parse_from([
+            "pipe",
+            cbq.path().to_str().unwrap(),
+            "--span",
+            "10..60",
+            "-b",
+            &basepath,
+            "-p",
+            "2",
+            "-X",
+            &format!("cat {{}} > {out_path}"),
+        ])?;
+        super::run(&cmd)?;
+
+        assert_eq!(count_fastx_records(out.path())?, 50, "--span 10..60");
         Ok(())
     }
 

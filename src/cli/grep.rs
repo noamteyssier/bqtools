@@ -8,7 +8,7 @@ use clap::Parser;
 use log::trace;
 use paraseq::{fasta, ReaderBuilder, Record};
 
-use crate::commands::grep::{Pattern, PatternCollection, SimpleRange};
+use crate::commands::grep::{Pattern, PatternCollection, PatternSets, SimpleRange};
 
 use super::{InputBinseq, OutputFile};
 
@@ -49,6 +49,8 @@ pub struct GrepArgs {
     pub reg1: Vec<String>,
 
     /// Pattern to search for in the extended sequence (repeatable)
+    ///
+    /// Paired input only; rejected for single-end files.
     #[clap(short = 'R', long)]
     pub reg2: Vec<String>,
 
@@ -105,8 +107,7 @@ pub struct GrepArgs {
     /// Denotes patterns are fixed strings (non-regex)
     ///
     /// Allows usage of Aho-Corasick algorithm for efficient matching.
-    /// Auto-detected when all patterns are uppercase ACGT. Ignored (falling
-    /// back to regex) under AND logic with 2+ patterns.
+    /// Auto-detected when all patterns are uppercase ACGT.
     #[clap(short = 'x', long)]
     pub fixed: bool,
 
@@ -295,6 +296,8 @@ pub struct PatternFileArgs {
 
     /// File of patterns to search for in extended sequence
     ///
+    /// Paired input only; rejected for single-end grep.
+    ///
     /// Accepts a plain text file (one pattern per line), a FASTA file
     /// (sequences are used as patterns), or TSV (alias / pattern).
     /// FASTA files and TSVs are auto-detected.
@@ -409,9 +412,7 @@ impl PatternFileArgs {
         Self::load_patterns(path)
     }
 
-    pub fn load_all_patterns(
-        &self,
-    ) -> Result<(PatternCollection, PatternCollection, PatternCollection)> {
+    pub fn load_all_patterns(&self) -> Result<PatternSets> {
         let pat1 = if let Some(ref path) = self.sfile {
             Self::load_patterns(path)?
         } else {
@@ -427,11 +428,11 @@ impl PatternFileArgs {
         } else {
             Vec::default()
         };
-        Ok((
-            PatternCollection(pat1),
-            PatternCollection(pat2),
-            PatternCollection(pat),
-        ))
+        Ok(PatternSets {
+            pat1: PatternCollection(pat1),
+            pat2: PatternCollection(pat2),
+            pat: PatternCollection(pat),
+        })
     }
 }
 
