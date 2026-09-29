@@ -49,7 +49,7 @@ pub fn run(args: &DecodeCommand) -> Result<()> {
     let writer = build_writer(&args.output, reader.is_paired())?;
     let format = args.output.format()?;
     let mate = if reader.is_paired() {
-        Some(args.output.mate())
+        Some(args.output.mate)
     } else {
         None
     };
