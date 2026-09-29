@@ -4,6 +4,7 @@ use std::path::Path;
 use anyhow::Result;
 use binseq::BinseqReader;
 use bon::builder;
+use clap::Parser;
 use niffler::Level;
 use rand::{Rng, RngExt};
 use tempfile::NamedTempFile;
@@ -121,4 +122,14 @@ pub fn count_fastx_records(path: &Path) -> Result<usize> {
         other => anyhow::bail!("count_fastx_records: unknown extension '.{other}'"),
     };
     Ok(count)
+}
+
+pub fn encode(in_path: &Path, out_path: &Path) -> Result<()> {
+    let cmd = crate::cli::EncodeCommand::try_parse_from([
+        "encode",
+        in_path.to_str().unwrap(),
+        "-o",
+        out_path.to_str().unwrap(),
+    ])?;
+    crate::commands::encode::run(&cmd)
 }

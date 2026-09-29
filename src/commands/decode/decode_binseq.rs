@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use binseq::prelude::*;
 use binseq::Result;
+use rand::{RngExt, SeedableRng};
 use std::sync::Mutex;
 
 use super::{fill_qual, write_record_pair, SplitWriter};
@@ -27,6 +28,8 @@ pub struct Decoder {
     format: FileFormat,
     mate: Mate,
     is_split: bool,
+    /// Optional `(fraction, seed)` keep-filter
+    sample: Option<(f64, u64)>,
 
     /// Global values
     global_writer: Arc<Mutex<SplitWriter>>,
@@ -34,7 +37,12 @@ pub struct Decoder {
 }
 
 impl Decoder {
-    pub fn new(writer: SplitWriter, format: FileFormat, mate: Mate) -> Self {
+    pub fn new(
+        writer: SplitWriter,
+        format: FileFormat,
+        mate: Mate,
+        sample: Option<(f64, u64)>,
+    ) -> Self {
         Decoder {
             mixed: Vec::new(),
             left: Vec::new(),
@@ -45,6 +53,7 @@ impl Decoder {
             format,
             mate,
             is_split: writer.is_split(),
+            sample,
             global_writer: Arc::new(Mutex::new(writer)),
             num_records: Arc::new(AtomicUsize::new(0)),
         }
@@ -57,6 +66,16 @@ impl Decoder {
 
 impl ParallelProcessor for Decoder {
     fn process_record<B: BinseqRecord>(&mut self, record: B) -> Result<()> {
+        // Keep/drop is a pure function of `(seed, record index)`, so the sample is
+        // reproducible regardless of thread count or batch boundaries.
+        if let Some((fraction, seed)) = self.sample {
+            let index = record.index();
+            if !rand::rngs::SmallRng::seed_from_u64(seed.wrapping_add(index)).random_bool(fraction)
+            {
+                return Ok(());
+            }
+        }
+
         let sbuf = record.sseq();
         let xbuf = record.xseq();
 
