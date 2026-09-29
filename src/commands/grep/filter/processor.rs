@@ -2,21 +2,20 @@ use crate::{
     cli::{FileFormat, Mate},
     commands::{
         decode::{fill_qual, write_record_pair, SplitWriter},
-        grep::{color::write_colored_record_pair, SimpleRange},
+        grep::{color::write_colored_record_pair, Engine, SimpleRange, Spans},
     },
 };
 use binseq::prelude::*;
+use fixedbitset::FixedBitSet;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
 };
 
-use super::{MatchRanges, PatternMatch};
-
 #[derive(Clone)]
 #[allow(clippy::struct_excessive_bools)]
-pub struct FilterProcessor<Pm: PatternMatch> {
-    matcher: Pm,
+pub struct FilterProcessor {
+    engine: Engine,
 
     /// Match logic (true = AND, false = OR)
     and_logic: bool,
@@ -42,9 +41,10 @@ pub struct FilterProcessor<Pm: PatternMatch> {
     /// Local total records processed
     local_total: usize,
 
-    /// Local primary/extended sequence match indices
-    smatches: MatchRanges,
-    xmatches: MatchRanges,
+    /// Local pattern hits, and where they are (only filled for colored output)
+    bits: FixedBitSet,
+    spans: Spans,
+    collect_spans: bool,
 
     /// Local write buffers
     mixed: Vec<u8>, // General purpose, interleaved or singlets
@@ -66,11 +66,11 @@ pub struct FilterProcessor<Pm: PatternMatch> {
     global_count: Arc<AtomicUsize>,
     global_total: Arc<AtomicUsize>,
 }
-impl<Pm: PatternMatch> FilterProcessor<Pm> {
+impl FilterProcessor {
     #[allow(clippy::fn_params_excessive_bools)]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        matcher: Pm,
+        engine: Engine,
         and_logic: bool,
         invert: bool,
         count: bool,
@@ -88,9 +88,11 @@ impl<Pm: PatternMatch> FilterProcessor<Pm> {
             right: Vec::new(),
             squal: Vec::new(),
             xqual: Vec::new(),
-            smatches: MatchRanges::default(),
-            xmatches: MatchRanges::default(),
-            matcher,
+            bits: engine.bitset(),
+            spans: Spans::default(),
+            // hit positions are only drawn for colored, non-inverted, written matches
+            collect_spans: color && !invert && !count,
+            engine,
             and_logic,
             invert,
             count,
@@ -108,40 +110,34 @@ impl<Pm: PatternMatch> FilterProcessor<Pm> {
             global_total: Arc::new(AtomicUsize::new(0)),
         }
     }
-    pub fn clear_matches(&mut self) {
-        self.smatches.clear();
-        self.xmatches.clear();
-    }
-
-    pub fn pattern_match(&mut self, sbuf: &[u8], xbuf: &[u8]) -> bool {
+    fn pattern_match(&mut self, sbuf: &[u8], xbuf: &[u8]) -> bool {
         let (primary, extended) = (self.range.slice(sbuf), self.range.slice(xbuf));
 
-        let found_either = self.matcher.match_either(
-            primary,
-            extended,
-            &mut self.smatches,
-            &mut self.xmatches,
-            self.and_logic,
-        );
-        let found_primary = self
-            .matcher
-            .match_primary(primary, &mut self.smatches, self.and_logic);
-        let found_secondary =
-            self.matcher
-                .match_secondary(extended, &mut self.xmatches, self.and_logic);
-
-        let pred = if self.and_logic {
-            found_either && found_primary && found_secondary
-        } else {
-            !self.smatches.is_empty() || !self.xmatches.is_empty()
+        let found = match (self.and_logic, self.collect_spans) {
+            // AND gives up at the first missing pattern; positions are only
+            // worth collecting once everything is known to hit
+            (true, _) => self.engine.all(primary, extended, &mut self.bits),
+            // OR without positions only needs to know whether anything hits
+            (false, false) => self.engine.any(primary, extended),
+            // a separate yes/no pass would scan matching records twice
+            (false, true) => {
+                self.collect(primary, extended);
+                !self.bits.is_clear()
+            }
         };
-
-        if self.invert {
-            self.clear_matches(); // ensure no partial matches are highlighted
-            !pred
-        } else {
-            pred
+        if found && self.and_logic && self.collect_spans {
+            self.collect(primary, extended);
         }
+        found != self.invert
+    }
+
+    /// Finds every pattern and where it hits, for colored output.
+    fn collect(&mut self, primary: &[u8], extended: &[u8]) {
+        self.bits.clear();
+        self.spans.clear();
+        self.engine
+            .hit(primary, extended, &mut self.bits, Some(&mut self.spans));
+        self.spans.shift(self.range.offset());
     }
     pub fn pprint_counts(&self) {
         let count = self.global_count.load(Ordering::Relaxed);
@@ -160,9 +156,8 @@ impl<Pm: PatternMatch> FilterProcessor<Pm> {
     }
 }
 
-impl<Pm: PatternMatch> ParallelProcessor for FilterProcessor<Pm> {
+impl ParallelProcessor for FilterProcessor {
     fn process_record<B: BinseqRecord>(&mut self, record: B) -> binseq::Result<()> {
-        self.clear_matches();
         self.local_total += 1;
 
         let sbuf = record.sseq();
@@ -201,8 +196,8 @@ impl<Pm: PatternMatch> ParallelProcessor for FilterProcessor<Pm> {
                     xbuf,
                     xqual,
                     record.xheader(),
-                    &mut self.smatches,
-                    &mut self.xmatches,
+                    &mut self.spans.primary,
+                    &mut self.spans.secondary,
                     self.format,
                 )
             } else {

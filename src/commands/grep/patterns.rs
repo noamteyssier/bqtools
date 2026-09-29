@@ -131,6 +131,26 @@ impl PatternSets {
             .collect()
     }
 
+    /// The same patterns as regexes that match them literally.
+    pub fn escaped(&self) -> Result<Self> {
+        let escape = |set: &PatternCollection| -> Result<PatternCollection> {
+            set.iter()
+                .map(|p| {
+                    Ok(Pattern {
+                        name: p.name.clone(),
+                        sequence: regex::escape(std::str::from_utf8(&p.sequence)?).into_bytes(),
+                    })
+                })
+                .collect::<Result<_>>()
+                .map(PatternCollection)
+        };
+        Ok(Self {
+            pat1: escape(&self.pat1)?,
+            pat2: escape(&self.pat2)?,
+            pat: escape(&self.pat)?,
+        })
+    }
+
     /// Total number of patterns across all three sets.
     pub fn len(&self) -> usize {
         self.pat1.len() + self.pat2.len() + self.pat.len()
@@ -301,6 +321,13 @@ mod pattern_sets_tests {
         assert!(sets(&[], &[], &[]).use_fixed(false));
         // forcing wins over autodetection
         assert!(sets(&[b"AC.GT"], &[], &[]).use_fixed(true));
+    }
+
+    #[test]
+    fn test_escaped_matches_literally() {
+        let s = sets(&[b"A.GT"], &[b"A+"], &[b"ACGT"]).escaped().unwrap();
+        assert_eq!(s, sets(&[b"A\\.GT"], &[b"A\\+"], &[b"ACGT"]));
+        assert!(sets(&[&[0xff]], &[], &[]).escaped().is_err());
     }
 
     #[test]

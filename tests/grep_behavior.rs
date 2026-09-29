@@ -1,8 +1,7 @@
 //! Black-box guardrails for `bqtools grep`: run the real binary against a tiny
 //! hand-written fixture and pin exact stdout. Fixed-string cases in the matrix
 //! run through every backend (Aho-Corasick, regex, fuzzy with `-k 0`), which
-//! must agree. Only behavior that is deliberate and consistent is pinned; see
-//! the notes at the bottom for known backend divergences left unpinned.
+//! must agree.
 
 use std::{fmt::Write as _, path::PathBuf, process::Command};
 
@@ -285,12 +284,40 @@ fn color() {
     // inverted matches highlight nothing
     m(s, &["-v", "@GATTA"], mate(&R1, &[0, 2, 3]));
 
-    // overlapping hits merge into one span (fixed strings only: the regex
-    // backend stops at the first matching pattern under OR, see below)
-    assert_eq!(
-        fx.ok(true, &["GATTA", "TTACA", "--or-logic", "--color", "always"]),
-        format!("r1\t{}\n", hit("", "GATTACA", "GAT"))
+    // overlapping hits merge into one span, and every pattern's hits are
+    // highlighted (regex under OR used to stop at the first matching pattern)
+    m(
+        s,
+        &["--or-logic", "@GATTA", "@TTACA"],
+        vec![format!("r1\t{}", hit("", "GATTACA", "GAT"))],
     );
+    m(
+        s,
+        &["--or-logic", "@GATT", "@CAGA"],
+        vec![format!(
+            "r1\t{}{}",
+            hit("", "GATT", "A"),
+            hit("", "CAGA", "T")
+        )],
+    );
+
+    // a mate's hits are highlighted even when the other mate hits too
+    // (Aho-Corasick used to stop after the primary mate)
+    let mut want = vec![
+        format!("r0\t{}", hit("AACCGG", "TT", "AA")),
+        format!("r0\t{}", R2[0]),
+        format!("r1\t{}", hit("GA", "TT", "ACAGAT")),
+        format!("r1\t{}", R2[1]),
+        format!("r2\t{}", hit("", "TTTTTTTTTT", "")),
+        format!("r2\t{}", hit("GA", "TT", "ACAGAT")),
+        format!("r3\t{}", R1[3]),
+        format!("r3\t{}", hit("", "TTTT", "CCCCGG")),
+    ];
+    want.sort();
+    for pattern in ["TT", "T[T]"] {
+        let out = fx.ok(false, &[pattern, "--color", "always"]);
+        assert_eq!(sorted_lines(&out), want, "pattern {pattern}");
+    }
 
     // fastq colors sequence and quality with the same spans
     assert_eq!(
@@ -321,8 +348,11 @@ fn regex_semantics() {
     // anchors apply to the sliced range, not the whole sequence
     assert_eq!(g(&["^ATTA", "--range", "1.."]), pair(&[1, 2]));
     assert_eq!(g(&["^ATTA"]), Vec::<String>::new());
-    // -x forces fixed-string matching even for non-ACGT text
+    // -x forces fixed-string matching even for non-ACGT text, and stays literal
+    // under AND (it used to fall back to regex there: `r.` would match `r1`)
     assert_eq!(g(&["-x", "GATTA"]), pair(&[1, 2]));
+    assert_eq!(g(&["-x", "-H", "r.", "1"]), Vec::<String>::new());
+    assert_eq!(g(&["-H", "r.", "1"]), pair(&[1]));
 }
 
 #[test]
@@ -418,7 +448,3 @@ fn rejected_invocations() {
     #[cfg(feature = "fuzzy")]
     fails(false, &["-z", "GATTA", "CC"]); // mixed pattern lengths
 }
-
-// Known backend divergences, deliberately NOT pinned (revisit when unifying):
-// * regex under OR stops at the first matching pattern, so only that
-//   pattern's hits are highlighted; Aho-Corasick and fuzzy highlight all.

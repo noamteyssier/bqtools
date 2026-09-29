@@ -107,8 +107,7 @@ pub struct GrepArgs {
     /// Denotes patterns are fixed strings (non-regex)
     ///
     /// Allows usage of Aho-Corasick algorithm for efficient matching.
-    /// Auto-detected when all patterns are uppercase ACGT. Ignored (falling
-    /// back to regex) under AND logic with 2+ patterns.
+    /// Auto-detected when all patterns are uppercase ACGT.
     #[clap(short = 'x', long)]
     pub fixed: bool,
 

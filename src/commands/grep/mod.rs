@@ -5,12 +5,8 @@ mod pattern_count;
 mod patterns;
 mod range;
 
-#[cfg(feature = "fuzzy")]
-use filter::FuzzyMatcher;
-use log::warn;
-
-pub use engine::Engine;
-use filter::{FilterProcessor, PatternMatcher, RegexMatcher};
+pub use engine::{Engine, Spans};
+use filter::FilterProcessor;
 use pattern_count::{PatternCountProcessor, PatternCounter};
 pub use patterns::{Pattern, PatternCollection, PatternSets};
 pub use range::SimpleRange;
@@ -18,7 +14,7 @@ pub use range::SimpleRange;
 use super::decode::build_writer;
 use crate::{
     cli::{FileFormat, GrepCommand, Mate},
-    commands::{decode::SplitWriter, grep::filter::AhoCorasickMatcher},
+    commands::decode::SplitWriter,
 };
 
 use anyhow::{bail, Result};
@@ -44,7 +40,8 @@ fn load_patterns(args: &GrepCommand, paired: bool) -> Result<PatternSets> {
     Ok(patterns)
 }
 
-fn build_engine(args: &GrepCommand, patterns: &PatternSets) -> Result<Engine> {
+/// `and_logic` (all patterns must hit) only applies to plain grep, not `-P`.
+fn build_engine(args: &GrepCommand, patterns: &PatternSets, and_logic: bool) -> Result<Engine> {
     #[cfg(feature = "fuzzy")]
     if args.grep.fuzzy_args.fuzzy {
         return Engine::fuzzy(
@@ -55,7 +52,14 @@ fn build_engine(args: &GrepCommand, patterns: &PatternSets) -> Result<Engine> {
         );
     }
     if patterns.use_fixed(args.grep.fixed) {
-        Engine::aho_corasick(patterns, args.grep.no_dfa)
+        if and_logic {
+            // ponytail: the regex crate's literal search beats aho-corasick's
+            // overlapping scan for the few patterns AND is used with; switch
+            // back if AND over hundreds of fixed patterns matters
+            Engine::regex(&patterns.escaped()?)
+        } else {
+            Engine::aho_corasick(patterns, args.grep.no_dfa)
+        }
     } else {
         Engine::regex(patterns)
     }
@@ -63,7 +67,11 @@ fn build_engine(args: &GrepCommand, patterns: &PatternSets) -> Result<Engine> {
 
 fn run_pattern_count(args: &GrepCommand, reader: BinseqReader) -> Result<()> {
     let patterns = load_patterns(args, reader.is_paired())?;
-    let counter = PatternCounter::new(build_engine(args, &patterns)?, &patterns, args.grep.invert);
+    let counter = PatternCounter::new(
+        build_engine(args, &patterns, false)?,
+        &patterns,
+        args.grep.invert,
+    );
     let proc = PatternCountProcessor::new(
         counter,
         args.grep.range.unwrap_or_default(),
@@ -83,55 +91,6 @@ fn run_pattern_count(args: &GrepCommand, reader: BinseqReader) -> Result<()> {
     Ok(())
 }
 
-/// Builds the pattern matcher, plus the effective AND-logic flag to use with
-/// it. AND vs OR only changes behavior when combining 2+ patterns, so with
-/// a single pattern AND logic is downgraded to OR — this keeps Aho-Corasick
-/// eligible (it doesn't implement AND) and matches the returned matcher to
-/// the logic value callers must pass alongside it.
-fn build_matcher(args: &GrepCommand, paired: bool) -> Result<(PatternMatcher, bool)> {
-    let patterns = load_patterns(args, paired)?;
-    // AND vs OR logic is only meaningful when combining 2+ patterns.
-    let and_logic = args.grep.and_logic() && patterns.len() > 1;
-
-    #[cfg(feature = "fuzzy")]
-    if args.grep.fuzzy_args.fuzzy {
-        let matcher = FuzzyMatcher::new(
-            &patterns.pat1.bytes(),
-            &patterns.pat2.bytes(),
-            &patterns.pat.bytes(),
-            args.grep.fuzzy_args.distance,
-            args.grep.fuzzy_args.inexact,
-            args.grep.range.unwrap_or_default().offset(),
-            args.grep.fuzzy_args.max_n_frac,
-        )?;
-        return Ok((PatternMatcher::Fuzzy(Box::new(matcher)), and_logic));
-    }
-
-    let use_fixed = patterns.use_fixed(args.grep.fixed);
-
-    if use_fixed && !and_logic {
-        let matcher = AhoCorasickMatcher::new(
-            &patterns.pat1.bytes(),
-            &patterns.pat2.bytes(),
-            &patterns.pat.bytes(),
-            args.grep.no_dfa,
-            args.grep.range.unwrap_or_default().offset(),
-        )?;
-        Ok((PatternMatcher::AhoCorasick(matcher), and_logic))
-    } else {
-        if use_fixed {
-            warn!("`-x/--fixed provided but ignored when using AND logic");
-        }
-        let matcher = RegexMatcher::new(
-            patterns.pat1.regexes()?,
-            patterns.pat2.regexes()?,
-            patterns.pat.regexes()?,
-            args.grep.range.unwrap_or_default().offset(),
-        );
-        Ok((PatternMatcher::Regex(matcher), and_logic))
-    }
-}
-
 fn run_grep(
     args: &GrepCommand,
     reader: BinseqReader,
@@ -140,9 +99,11 @@ fn run_grep(
     mate: Option<Mate>,
 ) -> Result<()> {
     let count = args.grep.count || args.grep.frac;
-    let (matcher, and_logic) = build_matcher(args, reader.is_paired())?;
+    let patterns = load_patterns(args, reader.is_paired())?;
+    // AND vs OR logic is only meaningful when combining 2+ patterns
+    let and_logic = args.grep.and_logic() && patterns.len() > 1;
     let proc = FilterProcessor::new(
-        matcher,
+        build_engine(args, &patterns, and_logic)?,
         and_logic,
         args.grep.invert,
         count,

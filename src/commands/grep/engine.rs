@@ -25,6 +25,23 @@ pub struct Spans {
     pub primary: Vec<Span>,
     pub secondary: Vec<Span>,
 }
+impl Spans {
+    pub fn clear(&mut self) {
+        self.primary.clear();
+        self.secondary.clear();
+    }
+
+    /// Moves every span right by `offset` (e.g. to undo a sliced range).
+    pub fn shift(&mut self, offset: usize) {
+        if offset == 0 {
+            return;
+        }
+        for (start, end) in self.primary.iter_mut().chain(&mut self.secondary) {
+            *start += offset;
+            *end += offset;
+        }
+    }
+}
 
 /// One pattern set compiled for a matching strategy.
 #[derive(Clone)]
@@ -99,6 +116,46 @@ impl Set {
     }
 }
 
+impl Set {
+    /// Whether every pattern of the set (`range` of the global numbering) is
+    /// found in at least one of `seqs`. Regex stops at the first missing pattern.
+    fn scan_all(
+        &mut self,
+        seqs: &[&[u8]],
+        range: std::ops::Range<usize>,
+        bits: &mut FixedBitSet,
+    ) -> bool {
+        if let Set::Regex(regexes) = self {
+            return regexes
+                .iter()
+                .all(|re| seqs.iter().any(|s| !s.is_empty() && re.is_match(s)));
+        }
+        for seq in seqs.iter().filter(|s| !s.is_empty()) {
+            self.scan(seq, range.start, bits, None);
+        }
+        range.into_iter().all(|idx| bits.contains(idx))
+    }
+
+    /// Whether any pattern is found in `seq`; stops at the first hit.
+    fn scan_any(&mut self, seq: &[u8]) -> bool {
+        match self {
+            Set::AhoCorasick(ac) => ac.as_ref().is_some_and(|ac| ac.is_match(seq)),
+            Set::Regex(regexes) => regexes.iter().any(|re| re.is_match(seq)),
+            #[cfg(feature = "fuzzy")]
+            Set::Fuzzy(set) => {
+                let (k, inexact) = (set.k, set.inexact);
+                let Some((searcher, patterns)) = &mut set.inner else {
+                    return false;
+                };
+                searcher
+                    .search_encoded_patterns(patterns, seq, k)
+                    .iter()
+                    .any(|m| !(inexact && m.cost == 0))
+            }
+        }
+    }
+}
+
 /// Finds which of the three pattern sets' patterns occur in a record.
 #[derive(Clone)]
 pub struct Engine {
@@ -152,6 +209,27 @@ impl Engine {
                 inexact,
             })))
         })
+    }
+
+    /// Whether any pattern occurs in the record, searched like [`Self::hit`]
+    /// but stopping at the first hit.
+    pub fn any(&mut self, primary: &[u8], secondary: &[u8]) -> bool {
+        let [s1, s2, s] = &mut self.sets;
+        (!primary.is_empty() && (s1.scan_any(primary) || s.scan_any(primary)))
+            || (!secondary.is_empty() && (s2.scan_any(secondary) || s.scan_any(secondary)))
+    }
+
+    /// Whether every pattern occurs in the record (an either-pattern in either
+    /// sequence), searched like [`Self::hit`] but giving up at the first
+    /// missing pattern where the backend allows. `bits` is scratch space from
+    /// [`Self::bitset`].
+    pub fn all(&mut self, primary: &[u8], secondary: &[u8], bits: &mut FixedBitSet) -> bool {
+        bits.clear();
+        let [s1, s2, s] = &mut self.sets;
+        let [o1, o2, o] = self.offsets;
+        s1.scan_all(&[primary], o1..o2, bits)
+            && s2.scan_all(&[secondary], o2..o, bits)
+            && s.scan_all(&[primary, secondary], o..self.len, bits)
     }
 
     /// An empty bitset with one bit per pattern, for [`Self::hit`].
@@ -253,6 +331,57 @@ mod tests {
             assert_eq!(hit(&mut e, "GGGG", "TTTT").0, [2], "{name}");
             assert_eq!(hit(&mut e, "TTTT", "GGGG").0, [2], "{name}");
             assert_eq!(hit(&mut e, "AAAAGGGG", "CCCC").0, [0, 1, 2], "{name}");
+        }
+    }
+
+    #[test]
+    fn test_any_is_scoped_like_hit() {
+        let sets = sets(&["AAAA"], &["CCCC"], &["GGGG"]);
+        for (name, mut e) in engines(&sets) {
+            assert!(!e.any(b"", b""), "{name}");
+            assert!(!e.any(b"TTTT", b"TTTT"), "{name}");
+            // a primary-only pattern is not searched in the extended sequence, and vice versa
+            assert!(!e.any(b"TTTT", b"AAAA"), "{name}");
+            assert!(!e.any(b"CCCC", b"TTTT"), "{name}");
+            assert!(e.any(b"AAAA", b""), "{name}");
+            assert!(e.any(b"", b"CCCC"), "{name}");
+            assert!(e.any(b"TTTT", b"GGGG"), "{name}");
+            assert!(e.any(b"GGGG", b""), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_all_requires_every_pattern() {
+        // either-patterns may be found in different mates
+        let sets = sets(&["AAAA"], &["CCCC"], &["GGGG", "TTTT"]);
+        for (name, mut e) in engines(&sets) {
+            let mut bits = e.bitset();
+            assert!(e.all(b"AAAAGGGG", b"CCCCTTTT", &mut bits), "{name}");
+            assert!(e.all(b"AAAAGGGGTTTT", b"CCCC", &mut bits), "{name}");
+            assert!(
+                !e.all(b"AAAAGGGG", b"CCCC", &mut bits),
+                "{name}: TTTT is missing"
+            );
+            assert!(
+                !e.all(b"AAAAGGGGTTTT", b"", &mut bits),
+                "{name}: no extended sequence"
+            );
+            assert!(
+                !e.all(b"", b"CCCCGGGGTTTT", &mut bits),
+                "{name}: AAAA is primary-only"
+            );
+            assert!(
+                !e.all(b"CCCC", b"AAAA", &mut bits),
+                "{name}: sets are scoped"
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_of_no_patterns_holds() {
+        for (name, mut e) in engines(&sets(&[], &[], &[])) {
+            let mut bits = e.bitset();
+            assert!(e.all(b"AAAA", b"", &mut bits), "{name}");
         }
     }
 
