@@ -1,15 +1,18 @@
 mod splitter;
 
 use anyhow::Result;
-use binseq::{bq, cbq, vbq, BinseqReader, BinseqWriterBuilder, ParallelReader};
+use binseq::{BinseqReader, ParallelReader};
 
 #[cfg(feature = "fuzzy")]
 use splitter::FuzzySplitter;
 use splitter::{AhoCorasickSplitter, RegexSplitter, SplitProcessor, Splitter};
 
 use crate::{
-    cli::{BinseqMode, SplitCommand},
-    commands::grep::{all_patterns_fixed, PatternCollection},
+    cli::SplitCommand,
+    commands::{
+        grep::{all_patterns_fixed, PatternCollection},
+        utils::builder_from_reader,
+    },
 };
 
 /// The three pattern sets a split operates over: primary-only, secondary-only,
@@ -85,30 +88,10 @@ fn build_splitter(args: &SplitCommand) -> Result<Splitter> {
     }
 }
 
-fn get_builder(args: &SplitCommand) -> Result<BinseqWriterBuilder> {
-    let builder = match args.input.mode()? {
-        BinseqMode::Bq => {
-            let reader = bq::MmapReader::new(args.input.path())?;
-            let header = reader.header();
-            BinseqWriterBuilder::from_bq_header(header)
-        }
-        BinseqMode::Vbq => {
-            let reader = vbq::MmapReader::new(args.input.path())?;
-            let header = reader.header();
-            BinseqWriterBuilder::from_vbq_header(header)
-        }
-        BinseqMode::Cbq => {
-            let reader = cbq::MmapReader::new(args.input.path())?;
-            let header = reader.header();
-            BinseqWriterBuilder::from_cbq_header(header)
-        }
-    };
-    Ok(builder)
-}
-
 pub fn run(args: &SplitCommand) -> Result<()> {
     let splitter = build_splitter(args)?;
-    let builder = get_builder(args)?;
+    let reader = BinseqReader::new(args.input.path())?;
+    let builder = builder_from_reader(&reader);
     std::fs::create_dir_all(&args.split.basepath)?;
     let mut proc = SplitProcessor::new(
         splitter,
@@ -118,7 +101,6 @@ pub fn run(args: &SplitCommand) -> Result<()> {
         !args.split.skip_unmatched,
         &args.split.unmatched_basename,
     )?;
-    let reader = BinseqReader::new(args.input.path())?;
     if let Some(span) = args.input.span {
         let num_records = reader.num_records()?;
         reader.process_parallel_range(
