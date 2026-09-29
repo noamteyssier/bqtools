@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::LazyLock};
 
 use anyhow::{bail, Context, Result};
 use hashbrown::HashMap;
@@ -164,27 +164,18 @@ pub fn generate_output_name(input_files: &[PathBuf], new_extension: &str) -> Res
     }
 }
 
-pub fn pull_single_files(input_files: &[PathBuf]) -> Result<Vec<Vec<PathBuf>>> {
-    let mut num_suspect = 0;
-    let pair_regex = Regex::new(r".+_R[12].+")?;
-    let mut pqueue = Vec::new();
-    for file in input_files {
-        let file_str = file.to_str().unwrap();
-        if pair_regex.is_match(file_str) {
-            num_suspect += 1;
-        }
-        pqueue.push(vec![file.to_owned()]);
-    }
+pub fn pull_single_files(input_files: &[PathBuf]) -> Vec<Vec<PathBuf>> {
+    static PAIR_LIKE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r".+_R[12].+").unwrap());
+    let num_suspect = input_files
+        .iter()
+        .filter(|file| PAIR_LIKE.is_match(file.to_str().unwrap()))
+        .count();
     if num_suspect > 0 {
         warn!(
             "Found {num_suspect} files that may be paired but are not. If this is not intentional, consider adding the `--paired` flag."
         );
     }
-    Ok(pqueue)
-}
-
-pub fn collate_groups(pqueue: &[Vec<PathBuf>]) -> Vec<Vec<PathBuf>> {
-    vec![pqueue.iter().flatten().cloned().collect()]
+    input_files.iter().map(|file| vec![file.clone()]).collect()
 }
 
 #[cfg(test)]

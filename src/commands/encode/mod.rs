@@ -3,6 +3,7 @@ use std::{
     io::{BufRead, BufReader},
     os::unix::fs::FileTypeExt,
     path::PathBuf,
+    sync::LazyLock,
 };
 
 use anyhow::{bail, Result};
@@ -18,9 +19,7 @@ use encode::encode_htslib;
 
 use crate::{
     cli::{EncodeCommand, FileFormat},
-    commands::encode::utils::{
-        collate_groups, generate_output_name, pair_r1_r2_files, pull_single_files,
-    },
+    commands::encode::utils::{generate_output_name, pair_r1_r2_files, pull_single_files},
 };
 
 mod encode;
@@ -88,7 +87,11 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
     Ok(())
 }
 
-fn process_queue(args: &EncodeCommand, queue: Vec<Vec<PathBuf>>, regex: &Regex) -> Result<()> {
+fn process_queue(
+    args: &EncodeCommand,
+    queue: Vec<Vec<PathBuf>>,
+    regex: &'static Regex,
+) -> Result<()> {
     let num_threads = args.output.threads();
 
     // Case where there are more threads than files
@@ -111,8 +114,7 @@ fn process_queue(args: &EncodeCommand, queue: Vec<Vec<PathBuf>>, regex: &Regex) 
 
         let mut handles = vec![];
         for (i, pair) in queue.into_iter().enumerate() {
-            let thread_args = args.clone();
-            let thread_regex = regex.clone();
+            let mut thread_args = args.clone();
             let mode = args.output.mode()?;
 
             // First `leftover_threads` files get one extra thread
@@ -123,8 +125,6 @@ fn process_queue(args: &EncodeCommand, queue: Vec<Vec<PathBuf>>, regex: &Regex) 
             };
 
             let handle = std::thread::spawn(move || -> Result<()> {
-                let mut file_args = thread_args.clone();
-
                 let inpaths: Vec<String> = pair
                     .iter()
                     .map(|path| path.to_str().unwrap().to_string())
@@ -132,23 +132,20 @@ fn process_queue(args: &EncodeCommand, queue: Vec<Vec<PathBuf>>, regex: &Regex) 
 
                 // A collated group always writes to the user-provided output path, even if
                 // it happens to contain only a single file (or file pair).
-                let collate = thread_args.input.batch_encoding_options.collate;
                 let paired = thread_args.input.batch_encoding_options.paired;
                 // `process_file_list` clears `-o` whenever it can't apply to this group.
-                let outpath = match (collate, &thread_args.output.output, pair.len()) {
-                    (_, Some(path), _) => path.clone(),
-                    (_, _, 1) => thread_regex
-                        .replace_all(&inpaths[0], mode.extension())
-                        .to_string(),
-                    (_, _, 2) if paired => generate_output_name(&pair, mode.extension())?,
+                let outpath = match (&thread_args.output.output, pair.len()) {
+                    (Some(path), _) => path.clone(),
+                    (_, 1) => regex.replace_all(&inpaths[0], mode.extension()).to_string(),
+                    (_, 2) if paired => generate_output_name(&pair, mode.extension())?,
                     _ => bail!("Output path must be provided when collating files"),
                 };
 
-                file_args.input.input = inpaths;
-                file_args.output.output = Some(outpath.clone());
-                file_args.output.options.threads = threads_for_this_file;
+                thread_args.input.input = inpaths;
+                thread_args.output.output = Some(outpath.clone());
+                thread_args.output.options.threads = threads_for_this_file;
 
-                match run_atomic(&file_args) {
+                match run_atomic(&thread_args) {
                     Ok(()) => (),
                     Err(err) => {
                         error!("Error generating output: {outpath}\n{err:?}\nSkipping.");
@@ -173,29 +170,26 @@ fn process_queue(args: &EncodeCommand, queue: Vec<Vec<PathBuf>>, regex: &Regex) 
 
     // Case where there are more files than threads (batching)
     } else {
-        let mut num_processed = 0;
-        loop {
-            let rbound = (num_processed + num_threads).min(queue.len());
-            if num_processed == rbound {
-                break;
-            }
-            let subqueue = queue[num_processed..rbound].to_vec();
-            num_processed += subqueue.len();
-            process_queue(args, subqueue, regex)?;
+        for chunk in queue.chunks(num_threads) {
+            process_queue(args, chunk.to_vec(), regex)?;
         }
     }
 
     Ok(())
 }
 
-/// Build the regex pattern for filtering input files
-fn build_file_regex(paired: bool) -> Result<Regex> {
-    let regex_str = if paired {
-        r"_R[12](_[^.]*)?\.(?:fastq|fq|fasta|fa)(?:\.gz|\.zst)?$"
+/// Regex for filtering input files (and naming their outputs)
+fn file_regex(paired: bool) -> &'static Regex {
+    static SINGLE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\.(fastq|fq|fasta|fa)(\.gz|\.zst)?$").unwrap());
+    static PAIRED: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"_R[12](_[^.]*)?\.(?:fastq|fq|fasta|fa)(?:\.gz|\.zst)?$").unwrap()
+    });
+    if paired {
+        &PAIRED
     } else {
-        r"\.(fastq|fq|fasta|fa)(\.gz|\.zst)?$"
-    };
-    Ok(Regex::new(regex_str)?)
+        &SINGLE
+    }
 }
 
 /// Filter paths based on regex and file type (regular file or FIFO)
@@ -225,18 +219,18 @@ fn process_file_list(args: &EncodeCommand, file_queue: Vec<PathBuf>) -> Result<(
     sorted_queue.sort_unstable();
 
     // Build the regex for output naming
-    let regex = build_file_regex(args.input.batch_encoding_options.paired)?;
+    let regex = file_regex(args.input.batch_encoding_options.paired);
 
     // Pair or pull single files
     let pqueue = if args.input.batch_encoding_options.paired {
-        pair_r1_r2_files(&sorted_queue)
+        pair_r1_r2_files(&sorted_queue)?
     } else {
         pull_single_files(&sorted_queue)
-    }?;
+    };
 
     // Optionally collate
     let pqueue = if args.input.batch_encoding_options.collate {
-        collate_groups(&pqueue)
+        vec![pqueue.into_iter().flatten().collect()]
     } else {
         pqueue
     };
@@ -270,16 +264,15 @@ fn process_file_list(args: &EncodeCommand, file_queue: Vec<PathBuf>) -> Result<(
         args.output.output = None;
     }
 
-    process_queue(&args, pqueue, &regex)
+    process_queue(&args, pqueue, regex)
 }
 
 fn run_recursive(args: &EncodeCommand) -> Result<()> {
-    let args = args.to_owned();
     let dir = args.input.as_directory()?;
 
     info!("Processing files in directory: {}", dir.display());
 
-    let regex = build_file_regex(args.input.batch_encoding_options.paired)?;
+    let regex = file_regex(args.input.batch_encoding_options.paired);
 
     let dir_walker = if let Some(max_depth) = args.input.recursion.depth {
         WalkDir::new(dir).max_depth(max_depth)
@@ -292,10 +285,10 @@ fn run_recursive(args: &EncodeCommand) -> Result<()> {
             .into_iter()
             .filter_map(std::result::Result::ok)
             .map(|e| e.path().to_owned()),
-        &regex,
+        regex,
     )?;
 
-    process_file_list(&args, file_queue)
+    process_file_list(args, file_queue)
 }
 
 fn run_manifest(args: &EncodeCommand) -> Result<()> {
@@ -303,21 +296,21 @@ fn run_manifest(args: &EncodeCommand) -> Result<()> {
         bail!("No manifest file provided");
     };
 
-    let regex = build_file_regex(args.input.batch_encoding_options.paired)?;
+    let regex = file_regex(args.input.batch_encoding_options.paired);
 
     let handle = File::open(manifest).map(BufReader::new)?;
     let lines = handle.lines().collect::<Result<Vec<_>, _>>()?;
     let num_lines = lines.len();
-    let file_queue = filter_valid_paths(lines.into_iter().map(PathBuf::from), &regex)?;
+    let file_queue = filter_valid_paths(lines.into_iter().map(PathBuf::from), regex)?;
     warn_skipped(num_lines, file_queue.len());
 
     process_file_list(args, file_queue)
 }
 
 fn run_manifest_inline(args: &EncodeCommand) -> Result<()> {
-    let regex = build_file_regex(args.input.batch_encoding_options.paired)?;
+    let regex = file_regex(args.input.batch_encoding_options.paired);
 
-    let file_queue = filter_valid_paths(args.input.input.iter().map(PathBuf::from), &regex)?;
+    let file_queue = filter_valid_paths(args.input.input.iter().map(PathBuf::from), regex)?;
     warn_skipped(args.input.num_files(), file_queue.len());
 
     process_file_list(args, file_queue)
