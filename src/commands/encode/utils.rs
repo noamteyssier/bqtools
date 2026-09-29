@@ -311,4 +311,129 @@ mod tests {
         assert_eq!(output2, "library_A_lane2.encoded");
         assert_ne!(output1, output2); // Ensure they're different
     }
+
+    /// Expected output name, or `Err(message)` for names that cannot be determined.
+    fn check_names(cases: &[(&[&str], &str, Result<&str, &str>)]) {
+        for (inputs, ext, expected) in cases {
+            let files: Vec<PathBuf> = inputs.iter().map(PathBuf::from).collect();
+            let got = generate_output_name(&files, ext).map_err(|e| e.to_string());
+            let expected = expected.map(str::to_string).map_err(str::to_string);
+            assert_eq!(got, expected, "inputs={inputs:?} ext={ext}");
+        }
+    }
+
+    #[test]
+    fn test_generate_output_name_single_cases() {
+        check_names(&[
+            (&["a.fq"], ".cbq", Ok("a.cbq")),
+            (&["a.fasta"], ".vbq", Ok("a.vbq")),
+            (&["a.fa"], ".bq", Ok("a.bq")),
+            (&["a.fa.zst"], ".bq", Ok("a.bq")),
+            (&["a.fastq.gz"], ".cbq", Ok("a.cbq")),
+            (&["dir.v1/a.b.fq.gz"], ".cbq", Ok("dir.v1/a.b.cbq")),
+            // `_R1` is not stripped for single inputs
+            (&["a_R1.fq"], ".cbq", Ok("a_R1.cbq")),
+            // the extension is only replaced at the end of the name
+            (&["a.fq.txt.fq"], ".cbq", Ok("a.fq.txt.cbq")),
+            (&["a.sam"], ".cbq", Ok("a.cbq")),
+            (&["a.bam"], ".cbq", Ok("a.cbq")),
+            (&["a.cram"], ".cbq", Ok("a.cbq")),
+            (&["a.bam.gz"], ".cbq", Ok("a.cbq")),
+            // unchanged: nothing to replace
+            (
+                &["a.txt"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for a.txt"),
+            ),
+            (
+                &["a.FQ"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for a.FQ"),
+            ),
+            (
+                &["a.fq.bz2"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for a.fq.bz2"),
+            ),
+            (
+                &["fq"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for fq"),
+            ),
+            (
+                &["a.cbq"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for a.cbq"),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn test_generate_output_name_paired_cases() {
+        check_names(&[
+            (&["s_R1.fq", "s_R2.fq"], ".cbq", Ok("s.cbq")),
+            (&["s_R2.fq", "s_R1.fq"], ".cbq", Ok("s.cbq")),
+            (
+                &["d/s_R1.fastq.gz", "d/s_R2.fastq.gz"],
+                ".vbq",
+                Ok("d/s.vbq"),
+            ),
+            (&["s_R1.fa.zst", "s_R2.fa.zst"], ".bq", Ok("s.bq")),
+            (&["s_R1_001.fq", "s_R2_001.fq"], ".cbq", Ok("s_001.cbq")),
+            (&["s_R1_a_b.fq", "s_R2_a_b.fq"], ".cbq", Ok("s_a_b.cbq")),
+            // the last `_R[12]` that leaves a dot-free suffix is the one stripped
+            (&["a_R1_R2.fq", "a_R2_R2.fq"], ".cbq", Ok("a_R1.cbq")),
+            (&["a_R1_x_R2_y.fq", "b"], ".cbq", Ok("a_R1_x_y.cbq")),
+            // only the first file is inspected
+            (&["s_R1.fq", "other.txt"], ".cbq", Ok("s.cbq")),
+            // no `_R[12]` (or a dotted suffix): fall back to swapping the extension
+            (&["s_1.fq", "s_2.fq"], ".cbq", Ok("s_1.cbq")),
+            (&["s.fq.gz", "t.fq.gz"], ".cbq", Ok("s.cbq")),
+            (&["a_R1_x.y.fq", "a_R2_x.y.fq"], ".cbq", Ok("a_R1_x.y.cbq")),
+            (
+                &["/t/x_R1/a.fq", "/t/x_R2/a.fq"],
+                ".cbq",
+                Ok("/t/x_R1/a.cbq"),
+            ),
+            // the fallback does not know about sam/bam/cram
+            (
+                &["s_R1.bam", "s_R2.bam"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for s_R1.bam"),
+            ),
+            (
+                &["s.sam", "t.sam"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for s.sam"),
+            ),
+            (
+                &["s_R1.txt", "s_R2.txt"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for s_R1.txt"),
+            ),
+            (
+                &["s_R1.FQ", "s_R2.FQ"],
+                ".cbq",
+                Err("Unable to autodetermine the output filename for s_R1.FQ"),
+            ),
+            // the stripped name equals the input
+            (
+                &["s_R1.fq", "s_R2.fq"],
+                "_R1.fq",
+                Err("Unable to autodetermine the output filename for s_R1.fq"),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn test_generate_output_name_invalid_count() {
+        for n in [0, 3] {
+            let files = vec![PathBuf::from("a.fq"); n];
+            let err = generate_output_name(&files, ".cbq").unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("Invalid number of input files: {n}")
+            );
+        }
+    }
 }
