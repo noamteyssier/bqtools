@@ -1,7 +1,7 @@
 use anyhow::Result;
 use binseq::BinseqRecord;
 use serde::Serialize;
-use std::{io::Write, ops::Div, path::Path};
+use std::{io::Write, path::Path};
 
 use super::{
     report::{add_assign, stats, table, write_tsv, Hist, Pair},
@@ -15,7 +15,7 @@ struct SeqQualityRecord {
 }
 
 #[derive(Clone)]
-pub struct QualHistogram {
+struct QualHistogram {
     inner: QualAbundance,
 }
 impl Default for QualHistogram {
@@ -35,13 +35,13 @@ impl QualHistogram {
             .iter()
             .map(|x| x.saturating_sub(PHRED_OFFSET) as usize)
             .sum();
-        let binned_mean = (total as f64).div(&(qual.len() as f64)).round() as usize;
+        let binned_mean = (total as f64 / qual.len() as f64).round() as usize;
         self.inner[binned_mean.min(self.inner.len() - 1)] += 1;
     }
 }
 impl Hist for QualHistogram {
     fn is_empty(&self) -> bool {
-        self.inner.iter().copied().sum::<usize>() == 0
+        self.inner.iter().all(|&c| c == 0)
     }
 
     fn ingest(&mut self, other: &mut Self) {
@@ -91,9 +91,6 @@ impl PerSequenceQuality {
     }
 
     pub fn finish(&mut self, outdir: &Path) -> Result<()> {
-        if !outdir.exists() {
-            std::fs::create_dir_all(outdir)?;
-        }
         self.0.write(outdir, "seq_quality")
     }
 

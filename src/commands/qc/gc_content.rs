@@ -8,9 +8,6 @@ use super::report::{add_assign, stats, table, write_tsv, Hist, Pair};
 /// Percentage bins: 0..=100
 const NUM_GC_BINS: usize = 101;
 
-pub type GcAbundance = [usize; NUM_GC_BINS];
-pub const DEFAULT_GC_ABUNDANCE: GcAbundance = [0; NUM_GC_BINS];
-
 fn is_gc(base: u8) -> bool {
     matches!(base, b'G' | b'g' | b'C' | b'c')
 }
@@ -22,13 +19,13 @@ struct GcContentRecord {
 }
 
 #[derive(Clone)]
-pub struct GcHistogram {
-    inner: GcAbundance,
+struct GcHistogram {
+    inner: [usize; NUM_GC_BINS],
 }
 impl Default for GcHistogram {
     fn default() -> Self {
         Self {
-            inner: DEFAULT_GC_ABUNDANCE,
+            inner: [0; NUM_GC_BINS],
         }
     }
 }
@@ -46,7 +43,7 @@ impl GcHistogram {
 }
 impl Hist for GcHistogram {
     fn is_empty(&self) -> bool {
-        self.inner.iter().copied().sum::<usize>() == 0
+        self.inner.iter().all(|&c| c == 0)
     }
 
     fn ingest(&mut self, other: &mut Self) {
@@ -97,9 +94,6 @@ impl PerSequenceGcContent {
     }
 
     pub fn finish(&mut self, outdir: &Path) -> Result<()> {
-        if !outdir.exists() {
-            std::fs::create_dir_all(outdir)?;
-        }
         self.0.write(outdir, "gc_content")
     }
 

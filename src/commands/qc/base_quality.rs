@@ -10,14 +10,14 @@ use super::{
 };
 
 #[derive(Serialize)]
-pub struct BaseQualityRecord {
+struct BaseQualityRecord {
     pos: usize,
     qual: usize,
     count: usize,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct BaseHistogram {
+struct BaseHistogram {
     /// Outer: position
     /// Inner: quality
     inner: Vec<QualAbundance>,
@@ -144,9 +144,6 @@ impl PerBaseSequenceQuality {
     }
 
     pub fn finish(&mut self, outdir: &Path) -> Result<()> {
-        if !outdir.exists() {
-            std::fs::create_dir_all(outdir)?;
-        }
         self.0.write(outdir, "base_quality")
     }
 

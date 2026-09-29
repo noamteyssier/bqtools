@@ -13,8 +13,7 @@ const IDX_G: usize = 2;
 const IDX_T: usize = 3;
 const IDX_N: usize = 4;
 
-pub type BaseAbundance = [usize; NUM_BASES];
-pub const DEFAULT_BASE_ABUNDANCE: BaseAbundance = [0; NUM_BASES];
+type BaseAbundance = [usize; NUM_BASES];
 
 /// Byte -> histogram index, built once at compile time.
 ///
@@ -44,7 +43,7 @@ fn base_index(base: u8) -> usize {
 }
 
 #[derive(Serialize)]
-pub struct BaseContentRecord {
+struct BaseContentRecord {
     pos: usize,
     a: usize,
     c: usize,
@@ -59,7 +58,7 @@ pub struct BaseContentRecord {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct BaseContentHistogram {
+struct BaseContentHistogram {
     /// Outer: position
     /// Inner: base abundance (A, C, G, T, N)
     inner: Vec<BaseAbundance>,
@@ -75,7 +74,7 @@ impl BaseContentHistogram {
             return;
         }
         if self.inner.len() < seq.len() {
-            self.inner.resize(seq.len(), DEFAULT_BASE_ABUNDANCE);
+            self.inner.resize(seq.len(), [0; NUM_BASES]);
         }
         seq.iter()
             .zip(self.inner.iter_mut())
@@ -86,7 +85,7 @@ impl BaseContentHistogram {
 
     /// Aggregate base composition across all positions.
     fn totals(&self) -> BaseAbundance {
-        let mut totals = DEFAULT_BASE_ABUNDANCE;
+        let mut totals = [0; NUM_BASES];
         for counts in &self.inner {
             for (t, &c) in totals.iter_mut().zip(counts.iter()) {
                 *t += c;
@@ -103,7 +102,7 @@ impl Hist for BaseContentHistogram {
 
     fn ingest(&mut self, other: &mut Self) {
         if self.len() < other.len() {
-            self.inner.resize(other.len(), DEFAULT_BASE_ABUNDANCE);
+            self.inner.resize(other.len(), [0; NUM_BASES]);
         }
         for (dst, src) in self.inner.iter_mut().zip(&mut other.inner) {
             add_assign(dst, src);
@@ -145,36 +144,18 @@ impl Hist for BaseContentHistogram {
         let totals = self.totals();
         let total: usize = totals.iter().sum();
 
-        Some(table(
-            &["Base", "Count", "Pct"],
-            &[
+        let rows: Vec<Vec<String>> = ["A", "C", "G", "T", "N"]
+            .iter()
+            .zip(totals)
+            .map(|(base, count)| {
                 vec![
-                    "A".into(),
-                    totals[IDX_A].to_string(),
-                    format!("{:.2}%", pct(totals[IDX_A], total)),
-                ],
-                vec![
-                    "C".into(),
-                    totals[IDX_C].to_string(),
-                    format!("{:.2}%", pct(totals[IDX_C], total)),
-                ],
-                vec![
-                    "G".into(),
-                    totals[IDX_G].to_string(),
-                    format!("{:.2}%", pct(totals[IDX_G], total)),
-                ],
-                vec![
-                    "T".into(),
-                    totals[IDX_T].to_string(),
-                    format!("{:.2}%", pct(totals[IDX_T], total)),
-                ],
-                vec![
-                    "N".into(),
-                    totals[IDX_N].to_string(),
-                    format!("{:.2}%", pct(totals[IDX_N], total)),
-                ],
-            ],
-        ))
+                    (*base).into(),
+                    count.to_string(),
+                    format!("{:.2}%", pct(count, total)),
+                ]
+            })
+            .collect();
+        Some(table(&["Base", "Count", "Pct"], &rows))
     }
 }
 
@@ -191,9 +172,6 @@ impl PerBaseSequenceContent {
     }
 
     pub fn finish(&mut self, outdir: &Path) -> Result<()> {
-        if !outdir.exists() {
-            std::fs::create_dir_all(outdir)?;
-        }
         self.0.write(outdir, "base_content")
     }
 

@@ -7,13 +7,13 @@ use serde::Serialize;
 use super::report::{add_assign, stats, table, write_tsv, Hist, Pair};
 
 #[derive(Serialize)]
-pub struct SeqLenRecord {
+struct SeqLenRecord {
     len: usize,
     count: usize,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct SeqLenHistogram {
+struct SeqLenHistogram {
     /// Indexed directly by sequence length
     inner: Vec<usize>,
 }
@@ -42,7 +42,7 @@ impl SeqLenHistogram {
 }
 impl Hist for SeqLenHistogram {
     fn is_empty(&self) -> bool {
-        self.inner.iter().copied().sum::<usize>() == 0
+        self.inner.iter().all(|&c| c == 0)
     }
 
     fn ingest(&mut self, other: &mut Self) {
@@ -98,9 +98,6 @@ impl SequenceLengthDistribution {
     }
 
     pub fn finish(&mut self, outdir: &Path) -> Result<()> {
-        if !outdir.exists() {
-            std::fs::create_dir_all(outdir)?;
-        }
         self.0.write(outdir, "seq_length")
     }
 

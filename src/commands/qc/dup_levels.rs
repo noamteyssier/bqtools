@@ -270,10 +270,6 @@ impl SequenceDuplicationLevels {
     }
 
     pub fn finish(&mut self, outdir: &Path) -> Result<()> {
-        if !outdir.exists() {
-            std::fs::create_dir_all(outdir)?;
-        }
-
         if self.emit_levels {
             self.counts.write(outdir, "duplication_levels")?;
         }

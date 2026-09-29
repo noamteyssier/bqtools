@@ -21,7 +21,7 @@ use crate::commands::match_output;
 const SUMMARY_PATH: &str = "summary.md";
 
 /// TODO: adapter content
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct QcProcessor {
     outdir: PathBuf,
     modules: Vec<QcModuleType>,
@@ -77,6 +77,9 @@ impl QcProcessor {
     }
 
     pub fn finish(&mut self) -> Result<()> {
+        if !self.outdir.exists() {
+            std::fs::create_dir_all(&self.outdir)?;
+        }
         self.modules
             .iter_mut()
             .try_for_each(|m| m.finish(&self.outdir))?;
@@ -87,10 +90,6 @@ impl QcProcessor {
     /// by each module's headline stats (the full data still lives in each
     /// module's own TSV).
     fn write_summary(&self) -> Result<()> {
-        if !self.outdir.exists() {
-            std::fs::create_dir_all(&self.outdir)?;
-        }
-
         let mut handle = match_output(Some(self.outdir.join(SUMMARY_PATH)))?;
 
         writeln!(handle, "# BQtools QC Report\n")?;
