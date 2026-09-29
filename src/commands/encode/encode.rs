@@ -74,10 +74,7 @@ pub fn encode_collection(
     process_collection(collection, &mut processor, config.threads)?;
     processor.finish()?;
 
-    Ok((
-        processor.get_global_record_count(),
-        processor.get_global_skip_count(),
-    ))
+    Ok(processor.counts())
 }
 
 fn process_collection<P>(
@@ -152,8 +149,5 @@ pub fn encode_htslib(
     }?;
     processor.finish()?;
 
-    Ok((
-        processor.get_global_record_count(),
-        processor.get_global_skip_count(),
-    ))
+    Ok(processor.counts())
 }
