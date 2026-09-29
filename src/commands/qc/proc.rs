@@ -10,7 +10,7 @@ use super::{report::table, QcConfig, QcModule};
 use anyhow::{bail, Result};
 use binseq::ParallelProcessor;
 
-use crate::commands::{match_output, utils::make_directory};
+use crate::commands::match_output;
 
 const SUMMARY_PATH: &str = "summary.md";
 
@@ -56,7 +56,7 @@ impl QcProcessor {
     /// module's own TSV).
     fn write_summary(&self) -> Result<()> {
         if !self.outdir.exists() {
-            make_directory(&self.outdir)?;
+            std::fs::create_dir_all(&self.outdir)?;
         }
 
         let mut handle = match_output(Some(self.outdir.join(SUMMARY_PATH)))?;

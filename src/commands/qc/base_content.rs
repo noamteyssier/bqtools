@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::sync::Mutex;
 
 use super::report::table;
-use crate::commands::{match_output, qc::modules::QcModule, utils::make_directory};
+use crate::commands::{match_output, qc::modules::QcModule};
 
 const BASE_CONTENT_PRIMARY_PATH: &str = "base_content_R1.tsv";
 const BASE_CONTENT_EXTENDED_PATH: &str = "base_content_R2.tsv";
@@ -240,7 +240,7 @@ impl QcModule for PerBaseSequenceContent {
 
     fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
         if !outdir.as_ref().exists() {
-            make_directory(outdir.as_ref())?;
+            std::fs::create_dir_all(outdir.as_ref())?;
         }
 
         let write_to = |base_content: &BaseContentHistogram, primary: bool| -> Result<()> {

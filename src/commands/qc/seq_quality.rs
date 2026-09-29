@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use std::{io::Write, ops::Div, path::Path, sync::Arc};
 
 use super::{report::table, QualAbundance, DEFAULT_QUAL_ABUNDANCE, PHRED_OFFSET};
-use crate::commands::{match_output, qc::modules::QcModule, utils::make_directory};
+use crate::commands::{match_output, qc::modules::QcModule};
 
 const SEQ_QUALITY_PRIMARY_PATH: &str = "seq_quality_R1.tsv";
 const SEQ_QUALITY_EXTENDED_PATH: &str = "seq_quality_R2.tsv";
@@ -143,7 +143,7 @@ impl QcModule for PerSequenceQuality {
 
     fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
         if !outdir.as_ref().exists() {
-            make_directory(outdir.as_ref())?;
+            std::fs::create_dir_all(outdir.as_ref())?;
         }
 
         let write_to = |seq_qual: &QualHistogram, primary: bool| -> Result<()> {

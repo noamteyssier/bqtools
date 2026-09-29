@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::sync::Mutex;
 
 use super::report::table;
-use crate::commands::{match_output, qc::modules::QcModule, utils::make_directory};
+use crate::commands::{match_output, qc::modules::QcModule};
 
 const SEQ_LENGTH_PRIMARY_PATH: &str = "seq_length_R1.tsv";
 const SEQ_LENGTH_EXTENDED_PATH: &str = "seq_length_R2.tsv";
@@ -146,7 +146,7 @@ impl QcModule for SequenceLengthDistribution {
 
     fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
         if !outdir.as_ref().exists() {
-            make_directory(outdir.as_ref())?;
+            std::fs::create_dir_all(outdir.as_ref())?;
         }
 
         let write_to = |hist: &SeqLenHistogram, primary: bool| -> Result<()> {

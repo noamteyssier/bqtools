@@ -9,10 +9,7 @@ use splitter::{AhoCorasickSplitter, RegexSplitter, SplitProcessor, Splitter};
 
 use crate::{
     cli::{BinseqMode, SplitCommand},
-    commands::{
-        grep::{all_patterns_fixed, PatternCollection},
-        utils::make_directory,
-    },
+    commands::grep::{all_patterns_fixed, PatternCollection},
 };
 
 /// The three pattern sets a split operates over: primary-only, secondary-only,
@@ -112,7 +109,7 @@ fn get_builder(args: &SplitCommand) -> Result<BinseqWriterBuilder> {
 pub fn run(args: &SplitCommand) -> Result<()> {
     let splitter = build_splitter(args)?;
     let builder = get_builder(args)?;
-    make_directory(&args.split.basepath)?;
+    std::fs::create_dir_all(&args.split.basepath)?;
     let mut proc = SplitProcessor::new(
         splitter,
         &builder,
@@ -122,7 +119,7 @@ pub fn run(args: &SplitCommand) -> Result<()> {
         &args.split.unmatched_basename,
     )?;
     let reader = BinseqReader::new(args.input.path())?;
-    if let Some(mut span) = args.input.span {
+    if let Some(span) = args.input.span {
         let num_records = reader.num_records()?;
         reader.process_parallel_range(
             proc.clone(),
