@@ -1,7 +1,7 @@
 use crate::{
     cli::{FileFormat, Mate},
     commands::{
-        decode::{write_record_pair, SplitWriter},
+        decode::{fill_qual, write_record_pair, SplitWriter},
         grep::{color::write_colored_record_pair, SimpleRange},
     },
 };
@@ -186,26 +186,13 @@ impl<Pm: PatternMatch> ParallelProcessor for FilterProcessor<Pm> {
             let squal = if record.has_quality() {
                 record.squal()
             } else {
-                if self.squal.len() < sbuf.len() {
-                    self.squal.resize(sbuf.len(), b'?');
-                }
-                &self.squal
+                fill_qual(&mut self.squal, sbuf.len())
             };
 
-            let xqual = if record.is_paired() {
-                if record.has_quality() {
-                    record.xqual()
-                } else {
-                    if self.xqual.len() < xbuf.len() {
-                        self.xqual.resize(xbuf.len(), b'?');
-                    }
-                    &self.xqual
-                }
+            let xqual = if record.is_paired() && record.has_quality() {
+                record.xqual()
             } else {
-                if self.xqual.len() < xbuf.len() {
-                    self.xqual.resize(xbuf.len(), b'?');
-                }
-                &self.xqual
+                fill_qual(&mut self.xqual, xbuf.len())
             };
 
             if self.color {

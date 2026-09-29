@@ -46,6 +46,14 @@ pub fn write_tsv_parts<W: Write>(
     Ok(())
 }
 
+/// Placeholder quality (`?`, Phred 30) of length `len`, growing `buf` as needed.
+pub fn fill_qual(buf: &mut Vec<u8>, len: usize) -> &[u8] {
+    if buf.len() < len {
+        buf.resize(len, b'?');
+    }
+    &buf[..len]
+}
+
 pub enum SplitWriter {
     Interleaved { inner: Writer },
     Split { left: Writer, right: Writer },
