@@ -2,7 +2,7 @@ use std::{io::Write, path::Path, sync::Arc};
 
 use anyhow::Result;
 use binseq::BinseqRecord;
-use parking_lot::Mutex;
+use std::sync::Mutex;
 use serde::Serialize;
 
 use super::report::table;
@@ -228,8 +228,8 @@ impl QcModule for PerBaseSequenceContent {
     }
 
     fn sync_final(&mut self) {
-        self.base_content.lock().ingest(&mut self.t_base_content);
-        self.base_xcontent.lock().ingest(&mut self.t_base_xcontent);
+        self.base_content.lock().unwrap().ingest(&mut self.t_base_content);
+        self.base_xcontent.lock().unwrap().ingest(&mut self.t_base_xcontent);
     }
 
     fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
@@ -249,15 +249,15 @@ impl QcModule for PerBaseSequenceContent {
             base_content.serialize_to(&mut handle)
         };
 
-        write_to(&self.base_content.lock(), true)?;
-        write_to(&self.base_xcontent.lock(), false)?;
+        write_to(&self.base_content.lock().unwrap(), true)?;
+        write_to(&self.base_xcontent.lock().unwrap(), false)?;
 
         Ok(())
     }
 
     fn summarize(&self) -> String {
-        let primary = self.base_content.lock().summary_table();
-        let extended = self.base_xcontent.lock().summary_table();
+        let primary = self.base_content.lock().unwrap().summary_table();
+        let extended = self.base_xcontent.lock().unwrap().summary_table();
         super::report::dual_section("Per-Base Sequence Content", primary, extended)
     }
 }

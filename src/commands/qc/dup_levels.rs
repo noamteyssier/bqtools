@@ -4,7 +4,7 @@ use anyhow::Result;
 use binseq::BinseqRecord;
 use hashbrown::HashMap;
 use log::trace;
-use parking_lot::Mutex;
+use std::sync::Mutex;
 use serde::Serialize;
 
 use super::report::{dual_section, table};
@@ -330,8 +330,8 @@ impl QcModule for SequenceDuplicationLevels {
     }
 
     fn sync_final(&mut self) {
-        self.dup.lock().ingest(&mut self.t_dup);
-        self.xdup.lock().ingest(&mut self.t_xdup);
+        self.dup.lock().unwrap().ingest(&mut self.t_dup);
+        self.xdup.lock().unwrap().ingest(&mut self.t_xdup);
     }
 
     fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
@@ -372,13 +372,13 @@ impl QcModule for SequenceDuplicationLevels {
         };
 
         write_to(
-            &self.dup.lock(),
+            &self.dup.lock().unwrap(),
             DUPLICATION_LEVELS_PRIMARY_PATH,
             OVERREPRESENTED_PRIMARY_PATH,
             "R1",
         )?;
         write_to(
-            &self.xdup.lock(),
+            &self.xdup.lock().unwrap(),
             DUPLICATION_LEVELS_EXTENDED_PATH,
             OVERREPRESENTED_EXTENDED_PATH,
             "R2",
@@ -391,8 +391,8 @@ impl QcModule for SequenceDuplicationLevels {
         let mut out = String::new();
 
         if self.emit_levels {
-            let primary = self.dup.lock().summary_table();
-            let extended = self.xdup.lock().summary_table();
+            let primary = self.dup.lock().unwrap().summary_table();
+            let extended = self.xdup.lock().unwrap().summary_table();
             out.push_str(&dual_section(
                 "Sequence Duplication Levels",
                 primary,
@@ -403,11 +403,11 @@ impl QcModule for SequenceDuplicationLevels {
         if self.emit_overrepresented {
             let primary = self
                 .dup
-                .lock()
+                .lock().unwrap()
                 .overrepresented_table(self.overrepresented_threshold);
             let extended = self
                 .xdup
-                .lock()
+                .lock().unwrap()
                 .overrepresented_table(self.overrepresented_threshold);
             let section = dual_section("Overrepresented Sequences", primary, extended);
             if !section.is_empty() {

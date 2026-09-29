@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use binseq::prelude::*;
 use binseq::Result;
-use parking_lot::Mutex;
+use std::sync::Mutex;
 
 use super::{write_record_pair, SplitWriter};
 use crate::cli::{FileFormat, Mate};
@@ -50,7 +50,7 @@ impl Decoder {
     }
 
     pub fn num_records(&self) -> usize {
-        *self.num_records.lock()
+        *self.num_records.lock().unwrap()
     }
 }
 
@@ -107,7 +107,7 @@ impl ParallelProcessor for Decoder {
     fn on_batch_complete(&mut self) -> Result<()> {
         // Lock the mutex to write to the global buffer
         {
-            let mut writer = self.global_writer.lock();
+            let mut writer = self.global_writer.lock().unwrap();
             if writer.is_split() {
                 writer.write_split(&self.left, true)?;
                 writer.write_split(&self.right, false)?;
@@ -118,7 +118,7 @@ impl ParallelProcessor for Decoder {
         }
         // Lock the mutex to update the number of records
         {
-            let mut num_records = self.num_records.lock();
+            let mut num_records = self.num_records.lock().unwrap();
             *num_records += self.local_count;
         }
 

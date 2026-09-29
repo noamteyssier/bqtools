@@ -2,7 +2,7 @@ use std::{io::Write, path::Path, sync::Arc};
 
 use anyhow::Result;
 use binseq::BinseqRecord;
-use parking_lot::Mutex;
+use std::sync::Mutex;
 use serde::Serialize;
 
 use super::report::table;
@@ -140,8 +140,8 @@ impl QcModule for SequenceLengthDistribution {
     }
 
     fn sync_final(&mut self) {
-        self.slen.lock().ingest(&mut self.t_slen);
-        self.xlen.lock().ingest(&mut self.t_xlen);
+        self.slen.lock().unwrap().ingest(&mut self.t_slen);
+        self.xlen.lock().unwrap().ingest(&mut self.t_xlen);
     }
 
     fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
@@ -161,15 +161,15 @@ impl QcModule for SequenceLengthDistribution {
             hist.serialize_to(&mut handle)
         };
 
-        write_to(&self.slen.lock(), true)?;
-        write_to(&self.xlen.lock(), false)?;
+        write_to(&self.slen.lock().unwrap(), true)?;
+        write_to(&self.xlen.lock().unwrap(), false)?;
 
         Ok(())
     }
 
     fn summarize(&self) -> String {
-        let primary = self.slen.lock().summary_table();
-        let extended = self.xlen.lock().summary_table();
+        let primary = self.slen.lock().unwrap().summary_table();
+        let extended = self.xlen.lock().unwrap().summary_table();
         super::report::dual_section("Sequence Length Distribution", primary, extended)
     }
 }

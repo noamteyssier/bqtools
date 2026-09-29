@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::cli::{FileFormat, Mate, SampleCommand};
 use anyhow::Result;
 use binseq::prelude::*;
-use parking_lot::Mutex;
+use std::sync::Mutex;
 use rand::{RngExt, SeedableRng};
 
 use super::decode::{build_writer, write_record_pair, SplitWriter};
@@ -113,7 +113,7 @@ impl ParallelProcessor for SampleProcessor {
     fn on_batch_complete(&mut self) -> binseq::Result<()> {
         // Lock the mutex to write to the global buffer
         {
-            let mut writer = self.global_writer.lock();
+            let mut writer = self.global_writer.lock().unwrap();
             if writer.is_split() {
                 writer.write_split(&self.left, true)?;
                 writer.write_split(&self.right, false)?;

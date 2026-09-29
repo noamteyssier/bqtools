@@ -1,6 +1,6 @@
 use anyhow::Result;
 use binseq::BinseqRecord;
-use parking_lot::Mutex;
+use std::sync::Mutex;
 use serde::Serialize;
 use std::{io::Write, ops::Div, path::Path, sync::Arc};
 
@@ -137,8 +137,8 @@ impl QcModule for PerSequenceQuality {
     }
 
     fn sync_final(&mut self) {
-        self.seq_squal.lock().ingest(&mut self.t_seq_squal);
-        self.seq_xqual.lock().ingest(&mut self.t_seq_xqual);
+        self.seq_squal.lock().unwrap().ingest(&mut self.t_seq_squal);
+        self.seq_xqual.lock().unwrap().ingest(&mut self.t_seq_xqual);
     }
 
     fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
@@ -158,15 +158,15 @@ impl QcModule for PerSequenceQuality {
             seq_qual.serialize_to(&mut handle)
         };
 
-        write_to(&self.seq_squal.lock(), true)?;
-        write_to(&self.seq_xqual.lock(), false)?;
+        write_to(&self.seq_squal.lock().unwrap(), true)?;
+        write_to(&self.seq_xqual.lock().unwrap(), false)?;
 
         Ok(())
     }
 
     fn summarize(&self) -> String {
-        let primary = self.seq_squal.lock().summary_table();
-        let extended = self.seq_xqual.lock().summary_table();
+        let primary = self.seq_squal.lock().unwrap().summary_table();
+        let extended = self.seq_xqual.lock().unwrap().summary_table();
         super::report::dual_section("Per-Sequence Quality", primary, extended)
     }
 }

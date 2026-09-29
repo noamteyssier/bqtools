@@ -2,7 +2,7 @@ use std::{io::stdout, sync::Arc};
 
 use anyhow::Result;
 use binseq::{BinseqRecord, ParallelProcessor};
-use parking_lot::Mutex;
+use std::sync::Mutex;
 use serde::Serialize;
 
 use crate::commands::grep::SimpleRange;
@@ -71,7 +71,7 @@ impl<Pc: PatternCount> PatternCountProcessor<Pc> {
             .has_headers(true)
             .from_writer(stdout());
 
-        let total_records = *self.global_total.lock();
+        let total_records = *self.global_total.lock().unwrap();
         let patterns = self.counter.pattern_strings();
 
         patterns
@@ -80,7 +80,7 @@ impl<Pc: PatternCount> PatternCountProcessor<Pc> {
             .zip(self.global_pattern_count.iter())
             .try_for_each(|((idx, _pattern), count)| -> Result<()> {
                 let name = &self.pattern_names[idx];
-                let record = PatternCountResult::new(name, *count.lock(), total_records);
+                let record = PatternCountResult::new(name, *count.lock().unwrap(), total_records);
                 writer.serialize(record)?;
                 Ok(())
             })?;
@@ -115,13 +115,13 @@ impl<Pc: PatternCount> ParallelProcessor for PatternCountProcessor<Pc> {
             .iter_mut()
             .zip(self.global_pattern_count.iter())
             .for_each(|(local, global)| {
-                *global.lock() += *local;
+                *global.lock().unwrap() += *local;
                 *local = 0;
             });
 
         // update the local and global total records processed
         {
-            *self.global_total.lock() += self.local_total;
+            *self.global_total.lock().unwrap() += self.local_total;
             self.local_total = 0;
         }
 

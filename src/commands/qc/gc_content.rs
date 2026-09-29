@@ -1,6 +1,6 @@
 use anyhow::Result;
 use binseq::BinseqRecord;
-use parking_lot::Mutex;
+use std::sync::Mutex;
 use serde::Serialize;
 use std::{io::Write, path::Path, sync::Arc};
 
@@ -154,8 +154,8 @@ impl QcModule for PerSequenceGcContent {
     }
 
     fn sync_final(&mut self) {
-        self.seq_gc.lock().ingest(&mut self.t_seq_gc);
-        self.seq_xgc.lock().ingest(&mut self.t_seq_xgc);
+        self.seq_gc.lock().unwrap().ingest(&mut self.t_seq_gc);
+        self.seq_xgc.lock().unwrap().ingest(&mut self.t_seq_xgc);
     }
 
     fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
@@ -175,15 +175,15 @@ impl QcModule for PerSequenceGcContent {
             seq_gc.serialize_to(&mut handle)
         };
 
-        write_to(&self.seq_gc.lock(), true)?;
-        write_to(&self.seq_xgc.lock(), false)?;
+        write_to(&self.seq_gc.lock().unwrap(), true)?;
+        write_to(&self.seq_xgc.lock().unwrap(), false)?;
 
         Ok(())
     }
 
     fn summarize(&self) -> String {
-        let primary = self.seq_gc.lock().summary_table();
-        let extended = self.seq_xgc.lock().summary_table();
+        let primary = self.seq_gc.lock().unwrap().summary_table();
+        let extended = self.seq_xgc.lock().unwrap().summary_table();
         super::report::dual_section("Per-Sequence GC Content", primary, extended)
     }
 }

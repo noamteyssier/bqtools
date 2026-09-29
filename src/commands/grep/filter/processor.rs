@@ -6,7 +6,7 @@ use crate::{
     },
 };
 use binseq::prelude::*;
-use parking_lot::Mutex;
+use std::sync::Mutex;
 use std::sync::Arc;
 
 use super::{MatchRanges, PatternMatch};
@@ -148,9 +148,9 @@ impl<Pm: PatternMatch> FilterProcessor<Pm> {
         }
     }
     pub fn pprint_counts(&self) {
-        let count = *self.global_count.lock();
+        let count = *self.global_count.lock().unwrap();
         if self.frac {
-            let total = *self.global_total.lock();
+            let total = *self.global_total.lock().unwrap();
             let frac = if total > 0 {
                 count as f64 / total as f64
             } else {
@@ -247,7 +247,7 @@ impl<Pm: PatternMatch> ParallelProcessor for FilterProcessor<Pm> {
     fn on_batch_complete(&mut self) -> binseq::Result<()> {
         // Lock the mutex to write to the global buffer
         if !self.count {
-            let mut writer = self.global_writer.lock();
+            let mut writer = self.global_writer.lock().unwrap();
             if writer.is_split() {
                 writer.write_split(&self.left, true)?;
                 writer.write_split(&self.right, false)?;
@@ -263,11 +263,11 @@ impl<Pm: PatternMatch> ParallelProcessor for FilterProcessor<Pm> {
         self.right.clear();
 
         // Increment the global count and reset local
-        *self.global_count.lock() += self.local_count;
+        *self.global_count.lock().unwrap() += self.local_count;
         self.local_count = 0;
 
         // Increment the global total and reset local
-        *self.global_total.lock() += self.local_total;
+        *self.global_total.lock().unwrap() += self.local_total;
         self.local_total = 0;
 
         Ok(())

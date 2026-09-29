@@ -2,7 +2,7 @@ use std::{io::Write, sync::Arc};
 
 use anyhow::Result;
 use binseq::ParallelProcessor;
-use parking_lot::Mutex;
+use std::sync::Mutex;
 
 use super::{BoxedWriter, RecordPair};
 use crate::{
@@ -84,7 +84,7 @@ impl ParallelProcessor for PipeProcessor {
     }
     fn on_batch_complete(&mut self) -> binseq::Result<()> {
         {
-            let mut lock = self.writer.lock();
+            let mut lock = self.writer.lock().unwrap();
             lock.write_all(&self.local)?;
             lock.flush()?;
         }
