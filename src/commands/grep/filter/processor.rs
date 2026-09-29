@@ -6,8 +6,8 @@ use crate::{
     },
 };
 use binseq::prelude::*;
-use std::sync::Mutex;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use super::{MatchRanges, PatternMatch};
 

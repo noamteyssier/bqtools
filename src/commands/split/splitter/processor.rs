@@ -104,7 +104,9 @@ impl SplitProcessor {
     }
 
     pub fn finish(&mut self) -> binseq::Result<()> {
-        self.writer.iter().try_for_each(|w| w.lock().unwrap().finish())
+        self.writer
+            .iter()
+            .try_for_each(|w| w.lock().unwrap().finish())
     }
 
     /// Removes any output files that received fewer than `min_records` records.
@@ -113,7 +115,11 @@ impl SplitProcessor {
     /// Returns the number of files removed.
     pub fn prune_below(&self, min_records: usize) -> Result<usize> {
         let mut removed = 0;
-        for (path, count) in self.paths.iter().zip(self.counts.iter().map(|c| *c.lock().unwrap())) {
+        for (path, count) in self
+            .paths
+            .iter()
+            .zip(self.counts.iter().map(|c| *c.lock().unwrap()))
+        {
             if count < min_records {
                 log::debug!(
                     "Removing {} ({count} records, below threshold of {min_records})",
@@ -134,7 +140,12 @@ impl SplitProcessor {
             .try_for_each(|(alias, count)| writeln!(&mut handle, "{alias}\t{count}"))?;
         if self.write_undetermined {
             if let Some(count) = self.counts.last() {
-                writeln!(&mut handle, "{}\t{}", self.undetermined_name, *count.lock().unwrap())?;
+                writeln!(
+                    &mut handle,
+                    "{}\t{}",
+                    self.undetermined_name,
+                    *count.lock().unwrap()
+                )?;
             }
         }
         handle.flush().map_err(Into::into)
@@ -203,7 +214,10 @@ impl ParallelProcessor for SplitProcessor {
             .iter()
             .zip(self.t_writer.iter_mut())
             .try_for_each(|(global_writer, thread_writer)| {
-                global_writer.lock().unwrap().ingest_completed(thread_writer)
+                global_writer
+                    .lock()
+                    .unwrap()
+                    .ingest_completed(thread_writer)
             })
     }
 

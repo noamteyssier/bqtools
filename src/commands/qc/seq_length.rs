@@ -2,8 +2,8 @@ use std::{io::Write, path::Path, sync::Arc};
 
 use anyhow::Result;
 use binseq::BinseqRecord;
-use std::sync::Mutex;
 use serde::Serialize;
+use std::sync::Mutex;
 
 use super::report::table;
 use crate::commands::{match_output, qc::modules::QcModule, utils::make_directory};

@@ -2,8 +2,8 @@ use std::{io::Write, path::Path, sync::Arc};
 
 use anyhow::Result;
 use binseq::BinseqRecord;
-use std::sync::Mutex;
 use serde::Serialize;
+use std::sync::Mutex;
 
 use super::report::table;
 use crate::commands::{match_output, qc::modules::QcModule, utils::make_directory};
@@ -228,8 +228,14 @@ impl QcModule for PerBaseSequenceContent {
     }
 
     fn sync_final(&mut self) {
-        self.base_content.lock().unwrap().ingest(&mut self.t_base_content);
-        self.base_xcontent.lock().unwrap().ingest(&mut self.t_base_xcontent);
+        self.base_content
+            .lock()
+            .unwrap()
+            .ingest(&mut self.t_base_content);
+        self.base_xcontent
+            .lock()
+            .unwrap()
+            .ingest(&mut self.t_base_xcontent);
     }
 
     fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {

@@ -56,7 +56,10 @@ impl<W: Write + Send> Encoder<W> {
     }
 
     fn write_batch(&mut self) -> binseq::Result<()> {
-        self.writer.lock().unwrap().ingest_completed(&mut self.t_writer)
+        self.writer
+            .lock()
+            .unwrap()
+            .ingest_completed(&mut self.t_writer)
     }
 
     fn write_final(&mut self) -> binseq::Result<()> {

@@ -2,8 +2,8 @@ use std::{io::Write, path::Path, sync::Arc};
 
 use anyhow::Result;
 use binseq::BinseqRecord;
-use std::sync::Mutex;
 use serde::Serialize;
+use std::sync::Mutex;
 
 use super::{report::table, QualAbundance, DEFAULT_QUAL_ABUNDANCE, PHRED_OFFSET};
 use crate::commands::{match_output, qc::modules::QcModule, utils::make_directory};
@@ -184,8 +184,14 @@ impl QcModule for PerBaseSequenceQuality {
     }
 
     fn sync_final(&mut self) {
-        self.base_squal.lock().unwrap().ingest(&mut self.t_base_squal);
-        self.base_xqual.lock().unwrap().ingest(&mut self.t_base_xqual);
+        self.base_squal
+            .lock()
+            .unwrap()
+            .ingest(&mut self.t_base_squal);
+        self.base_xqual
+            .lock()
+            .unwrap()
+            .ingest(&mut self.t_base_xqual);
 
         // handle total
         *self.n_records.lock().unwrap() += self.t_n_records;

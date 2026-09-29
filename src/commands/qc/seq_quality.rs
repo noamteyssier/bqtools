@@ -1,7 +1,7 @@
 use anyhow::Result;
 use binseq::BinseqRecord;
-use std::sync::Mutex;
 use serde::Serialize;
+use std::sync::Mutex;
 use std::{io::Write, ops::Div, path::Path, sync::Arc};
 
 use super::{report::table, QualAbundance, DEFAULT_QUAL_ABUNDANCE, PHRED_OFFSET};

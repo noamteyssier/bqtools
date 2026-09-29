@@ -2,8 +2,8 @@ use std::{io::stdout, sync::Arc};
 
 use anyhow::Result;
 use binseq::{BinseqRecord, ParallelProcessor};
-use std::sync::Mutex;
 use serde::Serialize;
+use std::sync::Mutex;
 
 use crate::commands::grep::SimpleRange;
 

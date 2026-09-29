@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::cli::{FileFormat, Mate, SampleCommand};
 use anyhow::Result;
 use binseq::prelude::*;
-use std::sync::Mutex;
 use rand::{RngExt, SeedableRng};
+use std::sync::Mutex;
 
 use super::decode::{build_writer, write_record_pair, SplitWriter};
 

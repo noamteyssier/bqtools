@@ -4,8 +4,8 @@ use anyhow::Result;
 use binseq::BinseqRecord;
 use hashbrown::HashMap;
 use log::trace;
-use std::sync::Mutex;
 use serde::Serialize;
+use std::sync::Mutex;
 
 use super::report::{dual_section, table};
 use crate::commands::{match_output, qc::modules::QcModule, utils::make_directory};
@@ -403,11 +403,13 @@ impl QcModule for SequenceDuplicationLevels {
         if self.emit_overrepresented {
             let primary = self
                 .dup
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .overrepresented_table(self.overrepresented_threshold);
             let extended = self
                 .xdup
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .overrepresented_table(self.overrepresented_threshold);
             let section = dual_section("Overrepresented Sequences", primary, extended);
             if !section.is_empty() {
