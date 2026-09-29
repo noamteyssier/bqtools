@@ -1,19 +1,11 @@
-mod ac_splitter;
-#[cfg(feature = "fuzzy")]
-mod fuzzy_splitter;
 mod processor;
-mod regex_splitter;
 
 use fixedbitset::FixedBitSet;
 use hashbrown::HashMap;
 
-pub use ac_splitter::AhoCorasickSplitter;
-#[cfg(feature = "fuzzy")]
-pub use fuzzy_splitter::FuzzySplitter;
 pub use processor::SplitProcessor;
-pub use regex_splitter::RegexSplitter;
 
-use crate::commands::grep::PatternCollection;
+use crate::commands::grep::{Engine, PatternSets};
 
 /// Maps hits over the concatenated pattern sets (primary, secondary, either)
 /// onto unique aliases, and resolves a record to a single output bin.
@@ -32,11 +24,11 @@ struct AliasBins {
     unique_bits: FixedBitSet,
 }
 impl AliasBins {
-    fn new(sets: [&PatternCollection; 3]) -> Self {
+    fn new(patterns: &PatternSets) -> Self {
         let mut aliases = Vec::new();
         let mut alias_idx = Vec::new();
         let mut map = HashMap::new();
-        for name in sets.iter().flat_map(|s| s.names()) {
+        for name in patterns.names() {
             let idx = *map.entry(name.clone()).or_insert_with(|| {
                 aliases.push(name);
                 aliases.len() - 1
@@ -65,15 +57,6 @@ impl AliasBins {
     }
 }
 
-/// The matching strategy behind a [`Splitter`].
-#[derive(Clone)]
-pub enum Matcher {
-    AhoCorasick(AhoCorasickSplitter),
-    Regex(RegexSplitter),
-    #[cfg(feature = "fuzzy")]
-    Fuzzy(Box<FuzzySplitter>),
-}
-
 /// Resolves a record's (primary, secondary) sequences to a single output bin.
 ///
 /// Patterns are matched against the primary sequence (first set), the secondary
@@ -82,18 +65,13 @@ pub enum Matcher {
 #[derive(Clone)]
 pub struct Splitter {
     bins: AliasBins,
-    matcher: Matcher,
+    engine: Engine,
 }
 impl Splitter {
-    pub fn new(
-        matcher: Matcher,
-        pat1: &PatternCollection,
-        pat2: &PatternCollection,
-        pat: &PatternCollection,
-    ) -> Self {
+    pub fn new(engine: Engine, patterns: &PatternSets) -> Self {
         Self {
-            bins: AliasBins::new([pat1, pat2, pat]),
-            matcher,
+            bins: AliasBins::new(patterns),
+            engine,
         }
     }
 
@@ -102,12 +80,7 @@ impl Splitter {
     pub fn split_idx(&mut self, primary: &[u8], secondary: &[u8]) -> Option<usize> {
         let bits = &mut self.bins.all_bits;
         bits.clear();
-        match &mut self.matcher {
-            Matcher::AhoCorasick(m) => m.hit(primary, secondary, bits),
-            Matcher::Regex(m) => m.hit(primary, secondary, bits),
-            #[cfg(feature = "fuzzy")]
-            Matcher::Fuzzy(m) => m.hit(primary, secondary, bits),
-        }
+        self.engine.hit(primary, secondary, bits, None);
         self.bins.resolve()
     }
 
@@ -120,7 +93,7 @@ impl Splitter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::grep::Pattern;
+    use crate::commands::grep::{Pattern, PatternCollection};
 
     fn pc(pats: &[(&str, &str)]) -> PatternCollection {
         PatternCollection(
@@ -133,9 +106,17 @@ mod tests {
         )
     }
 
+    fn sets(p1: &PatternCollection, p2: &PatternCollection, p: &PatternCollection) -> PatternSets {
+        PatternSets {
+            pat1: p1.clone(),
+            pat2: p2.clone(),
+            pat: p.clone(),
+        }
+    }
+
     fn ac(p1: &PatternCollection, p2: &PatternCollection, p: &PatternCollection) -> Splitter {
-        let m = AhoCorasickSplitter::new(p1, p2, p, false).unwrap();
-        Splitter::new(Matcher::AhoCorasick(m), p1, p2, p)
+        let sets = sets(p1, p2, p);
+        Splitter::new(Engine::aho_corasick(&sets, false).unwrap(), &sets)
     }
 
     #[test]
@@ -166,12 +147,8 @@ mod tests {
         assert_eq!(s.split_idx(b"", b""), None);
         assert_eq!(s.split_idx(b"", b"AAAA"), Some(0));
         assert_eq!(s.split_idx(b"AAAA", b""), Some(0));
-        let mut re = Splitter::new(
-            Matcher::Regex(RegexSplitter::new(&none, &none, &p).unwrap()),
-            &none,
-            &none,
-            &p,
-        );
+        let sets = sets(&none, &none, &p);
+        let mut re = Splitter::new(Engine::regex(&sets).unwrap(), &sets);
         assert_eq!(re.split_idx(b"", b""), None);
         assert_eq!(re.split_idx(b"", b"AAAA"), Some(0));
     }

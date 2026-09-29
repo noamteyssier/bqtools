@@ -1,4 +1,5 @@
 mod color;
+mod engine;
 mod filter;
 mod pattern_count;
 mod patterns;
@@ -7,14 +8,10 @@ mod range;
 #[cfg(feature = "fuzzy")]
 use filter::FuzzyMatcher;
 use log::warn;
-#[cfg(feature = "fuzzy")]
-use pattern_count::FuzzyPatternCounter;
 
+pub use engine::Engine;
 use filter::{FilterProcessor, PatternMatcher, RegexMatcher};
-use pattern_count::{
-    AhoCorasickPatternCounter, PatternCount, PatternCountProcessor, PatternCounter,
-    RegexPatternCounter,
-};
+use pattern_count::{PatternCountProcessor, PatternCounter};
 pub use patterns::{Pattern, PatternCollection, PatternSets};
 pub use range::SimpleRange;
 
@@ -47,47 +44,30 @@ fn load_patterns(args: &GrepCommand, paired: bool) -> Result<PatternSets> {
     Ok(patterns)
 }
 
-fn build_counter(args: &GrepCommand, paired: bool) -> Result<PatternCounter> {
-    let patterns = load_patterns(args, paired)?;
-
+fn build_engine(args: &GrepCommand, patterns: &PatternSets) -> Result<Engine> {
     #[cfg(feature = "fuzzy")]
     if args.grep.fuzzy_args.fuzzy {
-        let counter = FuzzyPatternCounter::new(
-            patterns.pat1,
-            patterns.pat2,
-            patterns.pat,
+        return Engine::fuzzy(
+            patterns,
             args.grep.fuzzy_args.distance,
             args.grep.fuzzy_args.inexact,
-            args.grep.invert,
             args.grep.fuzzy_args.max_n_frac,
-        )?;
-        return Ok(PatternCounter::Fuzzy(Box::new(counter)));
+        );
     }
-
     if patterns.use_fixed(args.grep.fixed) {
-        let counter = AhoCorasickPatternCounter::new(
-            patterns.pat1,
-            patterns.pat2,
-            patterns.pat,
-            args.grep.no_dfa,
-            args.grep.invert,
-        )?;
-        Ok(PatternCounter::AhoCorasick(counter))
+        Engine::aho_corasick(patterns, args.grep.no_dfa)
     } else {
-        let counter =
-            RegexPatternCounter::new(patterns.pat1, patterns.pat2, patterns.pat, args.grep.invert)?;
-        Ok(PatternCounter::Regex(counter))
+        Engine::regex(patterns)
     }
 }
 
 fn run_pattern_count(args: &GrepCommand, reader: BinseqReader) -> Result<()> {
-    let counter = build_counter(args, reader.is_paired())?;
-    let pattern_names = counter.pattern_names();
+    let patterns = load_patterns(args, reader.is_paired())?;
+    let counter = PatternCounter::new(build_engine(args, &patterns)?, &patterns, args.grep.invert);
     let proc = PatternCountProcessor::new(
         counter,
         args.grep.range.unwrap_or_default(),
         args.grep.header,
-        pattern_names,
     );
     if let Some(span) = args.input.span {
         let num_records = reader.num_records()?;

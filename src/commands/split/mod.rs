@@ -3,13 +3,14 @@ mod splitter;
 use anyhow::Result;
 use binseq::{BinseqReader, ParallelReader};
 
-#[cfg(feature = "fuzzy")]
-use splitter::FuzzySplitter;
-use splitter::{AhoCorasickSplitter, Matcher, RegexSplitter, SplitProcessor, Splitter};
+use splitter::{SplitProcessor, Splitter};
 
 use crate::{
     cli::SplitCommand,
-    commands::{grep::PatternSets, utils::builder_from_reader},
+    commands::{
+        grep::{Engine, PatternSets},
+        utils::builder_from_reader,
+    },
 };
 
 /// Loads the primary-only, secondary-only and either-sequence pattern sets.
@@ -28,7 +29,6 @@ fn load_patterns(args: &SplitCommand) -> Result<PatternSets> {
 /// forced with `-x/--fixed`); anything else falls back to the regex backend.
 fn build_splitter(args: &SplitCommand) -> Result<Splitter> {
     let patterns = load_patterns(args)?;
-    let PatternSets { pat1, pat2, pat } = &patterns;
 
     #[cfg(feature = "fuzzy")]
     if args.fuzzy_args.fuzzy {
@@ -37,39 +37,26 @@ fn build_splitter(args: &SplitCommand) -> Result<Splitter> {
             args.fuzzy_args.distance,
             args.fuzzy_args.inexact,
         );
-        let matcher = FuzzySplitter::new(
-            pat1,
-            pat2,
-            pat,
+        let engine = Engine::fuzzy(
+            &patterns,
             args.fuzzy_args.distance,
             args.fuzzy_args.inexact,
             args.fuzzy_args.max_n_frac,
         )?;
-        return Ok(Splitter::new(
-            Matcher::Fuzzy(Box::new(matcher)),
-            pat1,
-            pat2,
-            pat,
-        ));
+        return Ok(Splitter::new(engine, &patterns));
     }
 
-    if patterns.use_fixed(args.split.fixed) {
+    let engine = if patterns.use_fixed(args.split.fixed) {
         log::trace!(
             "Using Aho-Corasick splitter backend (dfa={})",
             !args.split.no_dfa,
         );
-        let matcher = AhoCorasickSplitter::new(pat1, pat2, pat, args.split.no_dfa)?;
-        Ok(Splitter::new(
-            Matcher::AhoCorasick(matcher),
-            pat1,
-            pat2,
-            pat,
-        ))
+        Engine::aho_corasick(&patterns, args.split.no_dfa)?
     } else {
         log::trace!("Using regex splitter backend");
-        let matcher = RegexSplitter::new(pat1, pat2, pat)?;
-        Ok(Splitter::new(Matcher::Regex(matcher), pat1, pat2, pat))
-    }
+        Engine::regex(&patterns)?
+    };
+    Ok(Splitter::new(engine, &patterns))
 }
 
 pub fn run(args: &SplitCommand) -> Result<()> {

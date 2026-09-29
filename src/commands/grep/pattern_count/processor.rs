@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use crate::commands::grep::SimpleRange;
 
-use super::PatternCount;
+use super::PatternCounter;
 
 #[derive(Serialize)]
 pub struct PatternCountResult<'a> {
@@ -38,11 +38,10 @@ impl<'a> PatternCountResult<'a> {
 }
 
 #[derive(Clone)]
-pub struct PatternCountProcessor<Pc: PatternCount> {
-    counter: Pc,
+pub struct PatternCountProcessor {
+    counter: PatternCounter,
     range: SimpleRange,
     header: bool,
-    pattern_names: Vec<String>,
 
     local_pattern_count: Vec<usize>,
     local_total: usize, // total number of reads processed (not just matches)
@@ -51,14 +50,13 @@ pub struct PatternCountProcessor<Pc: PatternCount> {
     global_pattern_count: Arc<Mutex<Vec<usize>>>,
     global_total: Arc<AtomicUsize>, // total number of reads processed
 }
-impl<Pc: PatternCount> PatternCountProcessor<Pc> {
-    pub fn new(counter: Pc, range: SimpleRange, header: bool, pattern_names: Vec<String>) -> Self {
+impl PatternCountProcessor {
+    pub fn new(counter: PatternCounter, range: SimpleRange, header: bool) -> Self {
         let num_patterns = counter.num_patterns();
         Self {
             counter,
             range,
             header,
-            pattern_names,
             local_pattern_count: vec![0; num_patterns],
             local_total: 0,
             global_pattern_count: Arc::new(Mutex::new(vec![0; num_patterns])),
@@ -73,14 +71,14 @@ impl<Pc: PatternCount> PatternCountProcessor<Pc> {
 
         let total_records = self.global_total.load(Ordering::Relaxed);
         let counts = self.global_pattern_count.lock().unwrap();
-        for (name, count) in self.pattern_names.iter().zip(counts.iter()) {
+        for (name, count) in self.counter.pattern_names().iter().zip(counts.iter()) {
             writer.serialize(PatternCountResult::new(name, *count, total_records))?;
         }
         writer.flush()?;
         Ok(())
     }
 }
-impl<Pc: PatternCount> ParallelProcessor for PatternCountProcessor<Pc> {
+impl ParallelProcessor for PatternCountProcessor {
     fn process_record<B: BinseqRecord>(&mut self, record: B) -> binseq::Result<()> {
         let (primary, extended) = if self.header {
             (record.sheader(), record.xheader())

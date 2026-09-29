@@ -118,6 +118,19 @@ impl PatternSets {
         [&mut self.pat1, &mut self.pat2, &mut self.pat]
     }
 
+    /// The three sets in numbering order: primary, extended, either.
+    pub fn each(&self) -> [&PatternCollection; 3] {
+        [&self.pat1, &self.pat2, &self.pat]
+    }
+
+    /// Pattern names in numbering order (see [`Self::each`]).
+    pub fn names(&self) -> Vec<String> {
+        self.each()
+            .into_iter()
+            .flat_map(PatternCollection::names)
+            .collect()
+    }
+
     /// Total number of patterns across all three sets.
     pub fn len(&self) -> usize {
         self.pat1.len() + self.pat2.len() + self.pat.len()
@@ -134,7 +147,8 @@ impl PatternSets {
     /// pattern is a plain uppercase ACGT string.
     pub fn use_fixed(&self, forced: bool) -> bool {
         let fixed = forced
-            || [&self.pat1, &self.pat2, &self.pat]
+            || self
+                .each()
                 .into_iter()
                 .flat_map(PatternCollection::iter)
                 .all(|p| is_fixed(&p.sequence));
