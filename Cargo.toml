@@ -22,7 +22,6 @@ hashbrown = "0.17.1"
 libc = "0.2.189"
 log = "0.4.34"
 memmap2 = "0.9.11"
-niffler = "3.0.1"
 nix = { version = "0.31.3", features = ["fs"] }
 paraseq = "0.6.0"
 rand = "0.10.3"
@@ -38,6 +37,7 @@ zstd = { version = "0.14.0", features = ["zstdmt"] }
 [dev-dependencies]
 bon = "3.10.1"
 itertools = "0.15.0"
+niffler = "3.0.1"
 tempfile = "3.27.0"
 
 [features]
