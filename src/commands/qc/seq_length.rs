@@ -3,6 +3,7 @@ use std::{io::Write, path::Path};
 use anyhow::Result;
 use binseq::BinseqRecord;
 use serde::Serialize;
+use serde_json::{json, Value};
 
 use super::report::{add_assign, stats, table, write_tsv, Hist, Pair};
 
@@ -83,6 +84,20 @@ impl Hist for SeqLenHistogram {
             ],
         ))
     }
+
+    fn json(&self) -> Option<Value> {
+        if self.is_empty() {
+            return None;
+        }
+        let (reads, mean, _, mode) = stats(&self.inner);
+        Some(json!({
+            "reads": reads,
+            "min": self.min_len().unwrap_or(0),
+            "max": self.max_len().unwrap_or(0),
+            "mean": mean,
+            "mode": mode,
+        }))
+    }
 }
 
 #[derive(Clone, Default)]
@@ -103,6 +118,10 @@ impl SequenceLengthDistribution {
 
     pub fn summarize(&self) -> String {
         self.0.summarize("Sequence Length Distribution")
+    }
+
+    pub fn json(&self) -> Value {
+        self.0.json()
     }
 }
 
