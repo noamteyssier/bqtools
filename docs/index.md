@@ -8,14 +8,14 @@ Start with [Installation](installation.md), then see [Formats](formats.md) to ch
 
 | Command | Description |
 | --- | --- |
-| [**Encode**](commands/encode.md) | Convert FASTA, FASTQ, or SAM/BAM/CRAM to BINSEQ |
-| [**Decode**](commands/decode.md) | Convert BINSEQ to FASTA, FASTQ, or TSV |
-| [**Cat**](commands/cat.md) | Concatenate BINSEQ files |
-| [**Info**](commands/info.md) | Show statistics for BINSEQ files |
-| [**Grep**](commands/grep.md) | Search for fixed-string, regex, or fuzzy matches |
-| [**Sample**](commands/sample.md) | Randomly subsample to FASTA, FASTQ, or TSV |
-| [**Split**](commands/split.md) | Split records into files by matching pattern |
-| [**Pipe**](commands/pipe.md) | Stream records through named pipes to tools that don't read BINSEQ, optionally running and supervising them (`-x`/`-X`) |
-| [**Revcomp**](commands/revcomp.md) | Reverse complement sequences |
-| [**Verify**](commands/verify.md) | Compute an order-independent checksum |
-| [**QC**](commands/qc.md) | Run FastQC-style quality control |
+| [`encode`](commands/encode.md) | Convert FASTA, FASTQ, or SAM/BAM/CRAM to BINSEQ |
+| [`decode`](commands/decode.md) | Convert BINSEQ to FASTA, FASTQ, or TSV |
+| [`cat`](commands/cat.md) | Concatenate BINSEQ files |
+| [`info`](commands/info.md) | Show statistics for BINSEQ files |
+| [`grep`](commands/grep.md) | Search for fixed-string, regex, or fuzzy matches |
+| [`sample`](commands/sample.md) | Randomly subsample to FASTA, FASTQ, or TSV |
+| [`split`](commands/split.md) | Split records into files by matching pattern |
+| [`pipe`](commands/pipe.md) | Stream records through named pipes to tools that don't read BINSEQ, optionally running and supervising them (`-x`/`-X`) |
+| [`revcomp`](commands/revcomp.md) | Reverse complement sequences |
+| [`verify`](commands/verify.md) | Compute an order-independent checksum |
+| [`qc`](commands/qc.md) | Run FastQC-style quality control |
