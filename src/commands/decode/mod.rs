@@ -2,7 +2,7 @@ mod decode_binseq;
 mod utils;
 
 use crate::cli::{DecodeCommand, FileFormat, InputBinseq, Mate, OutputFile};
-pub use decode_binseq::Decoder;
+pub use decode_binseq::{keep, Decoder};
 pub use utils::{fill_qual, write_record, Batch, SeqRead, SplitWriter};
 
 use anyhow::{bail, Result};
