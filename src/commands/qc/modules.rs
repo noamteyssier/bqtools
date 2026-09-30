@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use binseq::BinseqRecord;
+use serde_json::Value;
 
 use crate::commands::qc::{
     base_content::PerBaseSequenceContent, base_quality::PerBaseSequenceQuality,
@@ -60,6 +61,17 @@ impl QcModuleType {
             Self::GcContent(x) => x.summarize(),
             Self::SeqLength(x) => x.summarize(),
             Self::Duplication(x) => x.summarize(),
+        }
+    }
+    /// This module's JSON key and structured stats (`Null` if it has nothing to report).
+    pub fn json(&self) -> (&'static str, Value) {
+        match self {
+            Self::BaseQuality(x) => ("per_base_quality", x.json()),
+            Self::SeqQuality(x) => ("per_sequence_quality", x.json()),
+            Self::BaseContent(x) => ("per_base_content", x.json()),
+            Self::GcContent(x) => ("per_sequence_gc", x.json()),
+            Self::SeqLength(x) => ("sequence_length", x.json()),
+            Self::Duplication(x) => ("duplication", x.json()),
         }
     }
 }

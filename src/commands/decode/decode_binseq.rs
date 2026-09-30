@@ -58,14 +58,18 @@ impl Decoder {
     }
 }
 
+/// Keep/drop decision as a pure function of `(seed, record index)`.
+pub fn keep(index: u64, fraction: f64, seed: u64) -> bool {
+    rand::rngs::SmallRng::seed_from_u64(seed.wrapping_add(index)).random_bool(fraction)
+}
+
 impl ParallelProcessor for Decoder {
     fn process_record<B: BinseqRecord>(&mut self, record: B) -> Result<()> {
         // Keep/drop is a pure function of `(seed, record index)`, so the sample is
         // reproducible regardless of thread count or batch boundaries.
         if let Some((fraction, seed)) = self.sample {
             let index = record.index();
-            if !rand::rngs::SmallRng::seed_from_u64(seed.wrapping_add(index)).random_bool(fraction)
-            {
+            if !keep(index, fraction, seed) {
                 return Ok(());
             }
         }

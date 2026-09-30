@@ -64,7 +64,11 @@ fn build_engine(args: &GrepCommand, patterns: &PatternSets, and_logic: bool) -> 
     }
 }
 
-fn run_pattern_count(args: &GrepCommand, reader: BinseqReader) -> Result<()> {
+fn run_pattern_count(
+    args: &GrepCommand,
+    reader: BinseqReader,
+    range: std::ops::Range<usize>,
+) -> Result<()> {
     let patterns = load_patterns(args, reader.is_paired())?;
     let counter = PatternCounter::new(
         build_engine(args, &patterns, false)?,
@@ -76,7 +80,6 @@ fn run_pattern_count(args: &GrepCommand, reader: BinseqReader) -> Result<()> {
         args.grep.range.unwrap_or_default(),
         args.grep.header,
     );
-    let range = args.input.range(reader.num_records()?)?;
     reader.process_parallel_range(proc.clone(), args.output.threads(), range)?;
     proc.pprint_pattern_counts()?;
     Ok(())
@@ -88,6 +91,7 @@ fn run_grep(
     writer: SplitWriter,
     format: FileFormat,
     mate: Option<Mate>,
+    range: std::ops::Range<usize>,
 ) -> Result<()> {
     let count = args.grep.count || args.grep.frac;
     let patterns = load_patterns(args, reader.is_paired())?;
@@ -107,7 +111,6 @@ fn run_grep(
         args.should_color(),
     );
 
-    let range = args.input.range(reader.num_records()?)?;
     reader.process_parallel_range(proc.clone(), args.output.threads(), range)?;
     if count {
         proc.pprint_counts();
@@ -119,8 +122,9 @@ fn run_grep(
 pub fn run(args: &GrepCommand) -> Result<()> {
     args.grep.validate()?;
     let reader = BinseqReader::new(args.input.path())?;
+    let range = args.input.range(reader.num_records()?)?;
     if args.grep.pattern_count {
-        return run_pattern_count(args, reader);
+        return run_pattern_count(args, reader, range);
     }
     let format = args.output.format()?;
     let writer = build_writer(&args.output, format, reader.is_paired())?;
@@ -129,7 +133,7 @@ pub fn run(args: &GrepCommand) -> Result<()> {
     } else {
         None
     };
-    run_grep(args, reader, writer, format, mate)
+    run_grep(args, reader, writer, format, mate, range)
 }
 
 #[cfg(test)]
