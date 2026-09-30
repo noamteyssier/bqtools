@@ -28,6 +28,7 @@ pub struct QcProcessor {
     input_path: String,
     num_records: usize,
     paired: bool,
+    json: bool,
 }
 impl QcProcessor {
     /// `span_start` is the first record index processed (non-zero with `--span`).
@@ -73,6 +74,7 @@ impl QcProcessor {
             input_path,
             num_records,
             paired,
+            json: opts.json,
         })
     }
 
@@ -83,7 +85,30 @@ impl QcProcessor {
         self.modules
             .iter_mut()
             .try_for_each(|m| m.finish(&self.outdir))?;
-        self.write_summary()
+        self.write_summary()?;
+        if self.json {
+            self.write_json()?;
+        }
+        Ok(())
+    }
+
+    /// Writes `summary.json`: the overview plus each module's markdown summary.
+    fn write_json(&self) -> Result<()> {
+        let modules: Vec<String> = self
+            .modules
+            .iter()
+            .map(QcModuleType::summarize)
+            .filter(|s| !s.is_empty())
+            .collect();
+        let report = serde_json::json!({
+            "input": self.input_path,
+            "reads": self.num_records,
+            "paired": self.paired,
+            "modules": modules,
+        });
+        let handle = match_output(Some(self.outdir.join("summary.json")))?;
+        serde_json::to_writer_pretty(handle, &report)?;
+        Ok(())
     }
 
     /// Writes the high-level `summary.md` report: an overview table followed
