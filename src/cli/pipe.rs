@@ -22,7 +22,7 @@ pub struct PipeCommand {
 pub struct PipeOptions {
     /// Number of FIFOs to create (0 = number of CPUs; capped at CPU count)
     ///
-    /// For paired input this is split into p/2 R1/R2 pairs, so `{n}` ranges
+    /// For paired input this is split into p/2 R1/R2 pairs, so `{​n}` ranges
     /// over 0..p/2.
     #[clap(short = 'p', long, default_value = "0")]
     num_pipes: usize,
@@ -33,8 +33,8 @@ pub struct PipeOptions {
 
     /// Base path for the FIFOs
     ///
-    /// FIFOs are named `{basepath}_{n}.{fa|fq}` (single-end) or
-    /// `{basepath}_{n}_R1.{ext}` / `{basepath}_{n}_R2.{ext}` (paired), with `n`
+    /// FIFOs are named `{basepath}_{​n}.{fa|fq}` (single-end) or
+    /// `{basepath}_{​n}_R1.{ext}` / `{basepath}_{​n}_R2.{ext}` (paired), with `n`
     /// starting at 0. An existing FIFO at that path is reused.
     #[clap(short, long, default_value = "bqtools_fifo")]
     pub basepath: String,
@@ -44,7 +44,7 @@ pub struct PipeOptions {
     /// Use `{}` for the FIFO path (single-end), or `{R1}` / `{R2}` for the
     /// respective paths (paired-end). Referencing only one of `{R1}` / `{R2}`
     /// processes just that mate — the other channel's FIFOs are never created.
-    /// `{n}` expands to the pipe index, useful for per-shard output paths.
+    /// `{​n}` expands to the pipe index, useful for per-shard output paths.
     /// Commands run via `sh -c`; the template must contain the placeholder for
     /// the input type, and the run exits non-zero if any command fails.
     /// Mutually exclusive with `--exec-batch`.
@@ -57,7 +57,7 @@ pub struct PipeOptions {
     /// space-joined list of every matching FIFO path. Writing `{R1} {R2}`
     /// adjacently interleaves the paths as pairs (`r1_0` `r2_0` `r1_1` `r2_1` …) so
     /// positional-argument tools receive each pair together.
-    /// `{n}` is not expanded. Mutually exclusive with `--exec`.
+    /// `{​n}` is not expanded. Mutually exclusive with `--exec`.
     #[clap(short = 'X', long, conflicts_with = "exec")]
     pub exec_batch: Option<String>,
 }
