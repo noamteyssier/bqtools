@@ -52,7 +52,7 @@ bqtools verify sample.cbq -M 1
 
 ## qc
 
-FastQC-style modules. Writes `summary.md` plus one TSV per module (and per mate) to `-o`.
+FastQC-style modules. Writes `summary.md` plus one TSV per module and mate (`base_quality_R1.tsv`, `gc_content_R2.tsv`, ...) to `-o`. Single-end input only gets `_R1` files; `overrepresented_sequences_*.tsv` is only written if a sequence passes the threshold.
 
 ```bash
 # all modules into ./qc

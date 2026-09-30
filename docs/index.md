@@ -19,3 +19,9 @@ Start with [Installation](installation.md), then see [Formats](formats.md) to ch
 | [`revcomp`](commands/revcomp.md) | Reverse complement sequences |
 | [`verify`](commands/verify.md) | Compute an order-independent checksum |
 | [`qc`](commands/qc.md) | Run FastQC-style quality control |
+
+## Citation
+
+```
+Teyssier N, Dobin A (2026) BINSEQ: A family of high-performance binary formats for nucleotide sequences. PLoS Comput Biol 22(5): e1014181. https://doi.org/10.1371/journal.pcbi.1014181
+```

@@ -81,7 +81,7 @@ bqtools grep reads.cbq --file patterns.tsv -P
 ```
 
 !!! tip
-    `-P` counts every barcode or guide in one pass over the file. A record counts at most once per pattern but may count toward several patterns.
+    `-P` counts every barcode or guide in one pass over the file. A record counts at most once per pattern but may count toward several patterns. A regex like `ACGT|TCGA` is one pattern and gets one row.
 
 ## Fuzzy matching
 
