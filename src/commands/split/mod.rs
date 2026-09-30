@@ -62,10 +62,10 @@ fn build_splitter(args: &SplitCommand) -> Result<Splitter> {
 pub fn run(args: &SplitCommand) -> Result<()> {
     let splitter = build_splitter(args)?;
     let reader = BinseqReader::new(args.input.path())?;
+    let range = args.input.range(reader.num_records()?)?;
     let builder = builder_from_reader(&reader);
     std::fs::create_dir_all(&args.split.basepath)?;
     let mut proc = SplitProcessor::new(splitter, &builder, args)?;
-    let range = args.input.range(reader.num_records()?)?;
     reader.process_parallel_range(proc.clone(), args.split.threads, range)?;
     proc.finish()?;
     if !args.split.quiet {

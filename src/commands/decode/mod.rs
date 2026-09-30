@@ -42,6 +42,7 @@ pub fn run_with(
     sample: Option<(f64, u64)>,
 ) -> Result<Decoder> {
     let reader = BinseqReader::new(input.path())?;
+    let range = input.range(reader.num_records()?)?;
     let format = output.format()?;
     let writer = build_writer(output, format, reader.is_paired())?;
     let mate = if reader.is_paired() {
@@ -50,7 +51,6 @@ pub fn run_with(
         Mate::One
     };
     let proc = Decoder::new(writer, format, mate, sample);
-    let range = input.range(reader.num_records()?)?;
     reader.process_parallel_range(proc.clone(), output.threads(), range)?;
     Ok(proc)
 }
