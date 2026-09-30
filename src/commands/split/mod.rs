@@ -64,11 +64,11 @@ fn build_splitter(args: &SplitCommand, paired: bool) -> Result<Splitter> {
 
 pub fn run(args: &SplitCommand) -> Result<()> {
     let reader = BinseqReader::new(args.input.path())?;
+    let range = args.input.range(reader.num_records()?)?;
     let splitter = build_splitter(args, reader.is_paired())?;
     let builder = builder_from_reader(&reader);
     std::fs::create_dir_all(&args.split.basepath)?;
     let mut proc = SplitProcessor::new(splitter, &builder, args)?;
-    let range = args.input.range(reader.num_records()?)?;
     reader.process_parallel_range(proc.clone(), args.split.threads, range)?;
     proc.finish()?;
     if !args.split.quiet {

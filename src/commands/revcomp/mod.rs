@@ -19,12 +19,12 @@ pub fn run(args: &RevcompCommand) -> Result<()> {
         args.mate
     };
 
+    let range = args.input.range(reader.num_records()?)?;
     let builder = builder_from_reader(&reader);
     let ohandle = args.output.as_writer(args.input.mode()?)?;
     let writer = builder.build(ohandle)?;
     let mut processor = RevCompProcessor::new(writer, mate)?;
 
-    let range = args.input.range(reader.num_records()?)?;
     reader.process_parallel_range(processor.clone(), args.output.threads(), range)?;
     processor.finish()?;
 
@@ -195,6 +195,18 @@ mod tests {
                 "revcomp single-mate record count wrong for {mode:?} mate={mate_flag}"
             );
         }
+        Ok(())
+    }
+
+    /// An out-of-range `--span` must fail before the output file is created.
+    #[test]
+    fn test_revcomp_bad_span_leaves_no_output() -> Result<()> {
+        let in_tmp = write_fastx().call()?;
+        let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
+        encode(in_tmp.path(), bq_tmp.path())?;
+        let out = tempfile::tempdir()?.keep().join("out.cbq");
+        assert!(revcomp(bq_tmp.path(), &out, &["--span", "99999.."]).is_err());
+        assert!(!out.exists(), "output created despite invalid span");
         Ok(())
     }
 }

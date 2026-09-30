@@ -1,6 +1,7 @@
 use anyhow::Result;
 use binseq::BinseqRecord;
 use serde::Serialize;
+use serde_json::{json, Value};
 use std::{io::Write, path::Path};
 
 use super::report::{add_assign, stats, table, write_tsv, Hist, Pair};
@@ -79,6 +80,14 @@ impl Hist for GcHistogram {
             ],
         ))
     }
+
+    fn json(&self) -> Option<Value> {
+        if self.is_empty() {
+            return None;
+        }
+        let (reads, mean, median, mode) = stats(&self.inner);
+        Some(json!({"reads": reads, "mean_gc": mean, "median_gc": median, "mode_gc": mode}))
+    }
 }
 
 #[derive(Default, Clone)]
@@ -99,6 +108,10 @@ impl PerSequenceGcContent {
 
     pub fn summarize(&self) -> String {
         self.0.summarize("Per-Sequence GC Content")
+    }
+
+    pub fn json(&self) -> Value {
+        self.0.json()
     }
 }
 

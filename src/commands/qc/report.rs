@@ -68,6 +68,8 @@ pub trait Hist: Default {
     fn ingest(&mut self, other: &mut Self);
     fn serialize_to<W: Write>(&self, wtr: &mut W) -> Result<()>;
     fn summary_table(&self) -> Option<String>;
+    /// Headline stats as structured JSON (same numbers as `summary_table`, unrounded).
+    fn json(&self) -> Option<serde_json::Value>;
 }
 
 /// Thread-local (`t`) and shared (`g`) accumulators for the primary (R1) and
@@ -119,9 +121,31 @@ impl<H: Hist> Pair<H> {
         (f(&g[0]), f(&g[1]))
     }
 
+    /// `{"R1": …, "R2": …}` for each side with a JSON value; `Null` if neither has one.
+    pub fn json(&self) -> serde_json::Value {
+        let (primary, extended) = self.map(H::json);
+        sides_json(primary, extended)
+    }
+
     pub fn summarize(&self, title: &str) -> String {
         let (primary, extended) = self.map(H::summary_table);
         dual_section(title, primary, extended)
+    }
+}
+
+/// Combines per-side values into `{"R1": …, "R2": …}`; `Null` if both are `None`.
+pub fn sides_json(
+    primary: Option<serde_json::Value>,
+    extended: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let map: serde_json::Map<_, _> = [("R1", primary), ("R2", extended)]
+        .into_iter()
+        .filter_map(|(k, v)| v.map(|v| (k.to_string(), v)))
+        .collect();
+    if map.is_empty() {
+        serde_json::Value::Null
+    } else {
+        map.into()
     }
 }
 
