@@ -68,20 +68,25 @@ fn compute(args: &VerifyCommand) -> Result<VerifyReport> {
         );
     }
 
+    let (stored_qual, stored_flags) = match &reader {
+        BinseqReader::Bq(_) => (false, false),
+        BinseqReader::Vbq(r) => (r.header().qual, r.header().flags),
+        BinseqReader::Cbq(r) => (r.header().has_qualities(), r.header().has_flags()),
+    };
     if fields.headers && !reader_has_headers(&reader) {
-        fields.headers = false;
-        if fields.seq || fields.qual || fields.flags {
-            warn!(
-                "`{}` has no header data; excluding headers from the checksum",
-                args.input.path()
-            );
-        } else {
-            bail!(
-                "`{}` has no header data, and seq/qual/flags were all skipped; the checksum \
-                 would be computed over no fields",
-                args.input.path()
-            );
-        }
+        warn!(
+            "`{}` has no header data; excluding headers from the checksum",
+            args.input.path()
+        );
+    }
+    fields.headers &= reader_has_headers(&reader);
+    fields.qual &= stored_qual;
+    fields.flags &= stored_flags;
+    if !(fields.seq || fields.qual || fields.headers || fields.flags) {
+        bail!(
+            "`{}` stores none of the selected fields; the checksum would be computed over no fields",
+            args.input.path()
+        );
     }
 
     let processor = VerifyProcessor::new(fields, args.opts.mate);
@@ -299,7 +304,19 @@ mod tests {
             &["--skip-seq", "--skip-qual", "--skip-flags"],
         )
         .unwrap_err();
-        assert!(err.to_string().contains("no header data"));
+        assert!(err.to_string().contains("stores none"));
+        Ok(())
+    }
+
+    /// `.bq` stores only sequences, so skipping seq leaves nothing to hash.
+    #[test]
+    fn test_verify_rejects_no_stored_fields_left() -> Result<()> {
+        let in_tmp = write_fastx().call()?;
+        let bq_tmp = NamedTempFile::with_suffix(".bq")?;
+        encode(in_tmp.path(), bq_tmp.path(), &[])?;
+
+        let err = checksum(bq_tmp.path(), &["--skip-seq", "--skip-qual"]).unwrap_err();
+        assert!(err.to_string().contains("stores none"));
         Ok(())
     }
 
