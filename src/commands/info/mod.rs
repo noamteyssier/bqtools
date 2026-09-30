@@ -271,8 +271,13 @@ pub fn run(args: &InfoCommand) -> Result<()> {
     if args.opts.show_headers {
         let mut num_ok = 0;
         for path in &args.input {
-            let reader = match cbq::MmapReader::new(path.as_str()) {
-                Ok(reader) => reader,
+            // dispatch on detected format: the CBQ reader panics on other formats
+            let reader = match BinseqReader::new(path.as_str()) {
+                Ok(BinseqReader::Cbq(reader)) => reader,
+                Ok(_) => {
+                    warn!("Skipping non-CBQ path: {path}");
+                    continue;
+                }
                 Err(e) => {
                     warn!("Unable to read path as CBQ: {path} - {e}");
                     continue;
@@ -397,7 +402,17 @@ mod tests {
             let bq_tmp = NamedTempFile::with_suffix(mode.extension())?;
             encode(in_tmp.path(), bq_tmp.path())?;
 
-            for flags in [&[][..], &["--num"], &["--json"]] {
+            for flags in [&[][..], &["--num"], &["--json"], &["--show-headers"]] {
+                // --show-headers only succeeds on CBQ; other formats must error, not panic
+                if flags == ["--show-headers"] && !matches!(mode, BinseqMode::Cbq) {
+                    let cmd = crate::cli::InfoCommand::try_parse_from([
+                        "info",
+                        "--show-headers",
+                        bq_tmp.path().to_str().unwrap(),
+                    ])?;
+                    assert!(super::run(&cmd).is_err());
+                    continue;
+                }
                 let mut args = vec!["info"];
                 args.extend_from_slice(flags);
                 args.push(bq_tmp.path().to_str().unwrap());
