@@ -9,6 +9,7 @@ A dependency-refresh and internal cleanup release, with a grep engine consolidat
 - `pipe` supports `--span` to restrict processing to a range of records (#80)
 - `qc --json` also writes `summary.json` with an overview and per-module summaries (#95)
 - `sample -o out.{bq,vbq,cbq}` writes a BINSEQ file, keeping the input mode (#101)
+- `verify` accepts multiple inputs and prints one line per file (#106)
 
 ### Fixes
 
@@ -23,6 +24,7 @@ A dependency-refresh and internal cleanup release, with a grep engine consolidat
 - `info --show-headers` skips non-CBQ inputs with a warning instead of panicking (#98)
 - `pipe --help` no longer renders `{n}` as a line break (#100)
 - `split --xfile` is rejected on single-end input (#102)
+- `encode` reads SAM/BAM/CRAM from stdin (#105)
 
 ### Dependencies
 
