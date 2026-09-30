@@ -21,6 +21,8 @@ jobs:
       - name: Generate command reference
         run: cargo run --all-features --bin bqdoc
       - run: uvx zensical build --strict
+      - name: Publish markdown sources for LLMs
+        run: rsync -a --include='*/' --include='*.md' --exclude='*' docs/ site/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

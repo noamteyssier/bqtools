@@ -69,7 +69,7 @@ fn term(arg: &Arg) -> String {
         names
     } else {
         format!(
-            "{names} <i>{}</i>",
+            "{names} <var>{}</var>",
             esc(&value.to_lowercase().replace('_', "-"))
         )
     }
@@ -186,5 +186,44 @@ fn main() -> Result<()> {
             "add commands/{name}.md to the nav in mkdocs.yml"
         );
     }
+    write_llms(&nav)
+}
+
+/// Writes `llms.txt` (index) and `llms-full.txt` (all pages) in nav order.
+///
+/// Links point at the raw markdown, which the build copies into `site/`.
+fn write_llms(mkdocs: &str) -> Result<()> {
+    let field = |key: &str| {
+        mkdocs
+            .lines()
+            .find_map(|l| l.strip_prefix(key))
+            .map_or("", str::trim)
+    };
+    let url = field("site_url:").trim_end_matches('/');
+    let mut index = format!(
+        "# {}\n\n> {}\n\nRun `bqtools <command> --help` for the authoritative option list.\n\n## Docs\n\n",
+        field("site_name:"),
+        field("site_description:")
+    );
+    let mut full = String::new();
+    let nav = mkdocs.lines().skip_while(|l| *l != "nav:").skip(1);
+    for line in nav.take_while(|l| l.starts_with(' ')) {
+        let Some((label, path)) = line.trim().trim_start_matches("- ").split_once(':') else {
+            continue;
+        };
+        let path = path.trim();
+        if path.is_empty() {
+            let _ = write!(index, "\n## {label}\n\n");
+            continue;
+        }
+        let _ = writeln!(index, "- [{label}]({url}/{path})");
+        let _ = write!(
+            full,
+            "{}\n\n",
+            fs::read_to_string(Path::new("docs").join(path))?.trim()
+        );
+    }
+    fs::write("docs/llms.txt", index)?;
+    fs::write("docs/llms-full.txt", full)?;
     Ok(())
 }

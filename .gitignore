@@ -26,4 +26,5 @@ bqtools-qc/*
 
 # generated docs
 docs/commands
+docs/llms*.txt
 site
