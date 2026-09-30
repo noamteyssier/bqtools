@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.1
+
+### Features
+
+- `sample -n` keeps an exact number of records, chosen uniformly at random within `--span`. It conflicts with `-F` and is reproducible with `--seed`
+
+### Fixes
+
+- `encode` uses `paraseq` 0.6.1 and tests multithreaded SAM input
+- `verify` corruption test tries several offsets instead of one
+
+### Dependencies
+
+- `paraseq` 0.6.0 → 0.6.1
+- add `fixedbitset`
+
 ## 0.6.0
 
 A dependency-refresh and internal cleanup release, with a grep engine consolidation, a few bug fixes, and a few new flags (`pipe --span`, `qc --json`, BINSEQ output for `sample`). Also, `encode` no longer logs an `error!` line before bailing, so those errors now print once, via `anyhow`. The work landed as stacked PRs (#7–#80) on `dev-0.6.0`.
