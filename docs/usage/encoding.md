@@ -52,7 +52,7 @@ bqtools encode sorted.bam -I -o sample.cbq
 ```
 
 !!! note
-    SAM/BAM/CRAM must be a file path, not stdin, and needs the `htslib` feature (on by default).
+    SAM/BAM/CRAM needs the `htslib` feature (on by default). Stdin works for `.cbq` and `.vbq`; `.bq` needs a file path.
 
 ## Headers, qualities, and genomes
 
