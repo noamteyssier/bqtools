@@ -118,23 +118,27 @@ fn finish<W: Write + Send>(processor: &mut Encoder<W>) -> Result<(usize, usize)>
 
 #[cfg(feature = "htslib")]
 pub fn encode_htslib(
-    inpath: &str,
+    inpath: Option<&str>,
     opath: Option<&str>,
     mode: BinseqMode,
     config: BinseqConfig,
     paired: bool,
 ) -> Result<(usize, usize)> {
     use super::utils::get_sequence_len_htslib;
+    use anyhow::Context;
     use paraseq::{htslib, prelude::*};
 
     let ohandle = match_output(opath)?;
     let mut builder = builder(mode, &config).paired(paired);
 
     if matches!(mode, BinseqMode::Bq) {
+        // stdin cannot be read twice to probe the sequence length
+        let inpath =
+            inpath.context("bq from stdin is unsupported with htslib input, use cbq or vbq")?;
         let (slen, xlen) = get_sequence_len_htslib(inpath, paired)?;
         builder = builder.slen(slen).xlen(xlen);
     }
-    let reader = htslib::Reader::from_path(inpath)?;
+    let reader = htslib::Reader::from_optional_path(inpath)?;
     let writer = builder.build(ohandle)?;
     let mut processor = Encoder::new(writer)?;
     if paired {

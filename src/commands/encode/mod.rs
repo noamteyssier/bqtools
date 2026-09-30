@@ -13,8 +13,6 @@ use regex::Regex;
 use walkdir::WalkDir;
 
 #[cfg(feature = "htslib")]
-use anyhow::Context;
-#[cfg(feature = "htslib")]
 use encode::encode_htslib;
 
 use crate::{
@@ -46,14 +44,10 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
 
             #[cfg(feature = "htslib")]
             {
-                let (kind, context) = if interleaved {
-                    ("interleaved", "Must provide an input path for htslib")
-                } else {
-                    ("single", "Must provide an input path for htslib")
-                };
+                let kind = if interleaved { "interleaved" } else { "single" };
                 trace!("launching {kind} encoding (htslib)");
                 encode_htslib(
-                    args.input.single_path()?.context(context)?,
+                    args.input.single_path()?,
                     opath.as_deref(),
                     mode?,
                     config,
