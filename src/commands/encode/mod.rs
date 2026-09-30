@@ -3,6 +3,7 @@ use std::{
     io::{BufRead, BufReader},
     os::unix::fs::FileTypeExt,
     path::PathBuf,
+    sync::LazyLock,
 };
 
 use anyhow::{bail, Result};
@@ -12,15 +13,11 @@ use regex::Regex;
 use walkdir::WalkDir;
 
 #[cfg(feature = "htslib")]
-use anyhow::Context;
-#[cfg(feature = "htslib")]
 use encode::encode_htslib;
 
 use crate::{
     cli::{EncodeCommand, FileFormat},
-    commands::encode::utils::{
-        collate_groups, generate_output_name, pair_r1_r2_files, pull_single_files,
-    },
+    commands::encode::utils::{generate_output_name, pair_r1_r2_files, pull_single_files},
 };
 
 mod encode;
@@ -32,79 +29,49 @@ use encode::encode_collection;
 /// Run the encoding process for an atomic single/paired input
 fn run_atomic(args: &EncodeCommand) -> Result<()> {
     let opath = args.output_path()?;
-    let (num_records, num_skipped) = if args.input.paired() {
-        trace!("launching paired encoding");
-        encode_collection(
-            args.input.build_paired_collection()?,
-            opath.as_deref(),
-            args.output.mode()?,
-            args.output.options.into(),
-        )
-    } else if args.input.interleaved {
-        if let Some(FileFormat::Bam) = args.input.format() {
+    let paired = args.input.paired();
+    let interleaved = args.input.interleaved;
+    // evaluated lazily at each call site so input errors surface first
+    let mode = args.output.mode();
+    let config = args.output.options.into();
+
+    let (num_records, num_skipped) =
+        if !paired && matches!(args.input.format(), Some(FileFormat::Bam)) {
             #[cfg(not(feature = "htslib"))]
             {
-                error!("Missing feature flag - htslib. Please compile with htslib feature flag enabled to process HTSlib files");
                 bail!("Missing feature flag - htslib");
             }
 
             #[cfg(feature = "htslib")]
             {
-                trace!("launching interleaved encoding (htslib)");
+                let kind = if interleaved { "interleaved" } else { "single" };
+                trace!("launching {kind} encoding (htslib)");
                 encode_htslib(
-                    args.input
-                        .single_path()?
-                        .context("Must provide an input path for HTSLib")?,
+                    args.input.single_path()?,
                     opath.as_deref(),
-                    args.output.mode()?,
-                    args.output.options.into(),
-                    true,
+                    mode?,
+                    config,
+                    interleaved,
                 )
             }
         } else {
-            trace!("launching interleaved encoding (fastx)");
-            encode_collection(
-                args.input.build_interleaved_collection()?,
-                opath.as_deref(),
-                args.output.mode()?,
-                args.output.options.into(),
-            )
-        }
-    } else if let Some(FileFormat::Bam) = args.input.format() {
-        #[cfg(not(feature = "htslib"))]
-        {
-            error!("Missing feature flag - htslib. Please compile with htslib feature flag enabled to process HTSlib files");
-            bail!("Missing feature flag - htslib");
-        }
+            let collection = if paired {
+                trace!("launching paired encoding");
+                args.input.build_paired_collection()?
+            } else if interleaved {
+                trace!("launching interleaved encoding (fastx)");
+                args.input.build_interleaved_collection()?
+            } else {
+                trace!("launching single encoding (fastx)");
+                args.input.build_single_collection()?
+            };
+            encode_collection(collection, opath.as_deref(), mode?, config)
+        }?;
 
-        #[cfg(feature = "htslib")]
-        {
-            trace!("launching single encoding (htslib)");
-            encode_htslib(
-                args.input
-                    .single_path()?
-                    .context("Must provide an input path for HTSlib")?,
-                opath.as_deref(),
-                args.output.mode()?,
-                args.output.options.into(),
-                false,
-            )
-        }
-    } else {
-        trace!("launching single encoding (fastx)");
-        encode_collection(
-            args.input.build_single_collection()?,
-            opath.as_deref(),
-            args.output.mode()?,
-            args.output.options.into(),
-        )
-    }?;
-
-    if let Some(opath) = opath {
-        info!("Wrote {num_records} records to: {opath}");
-    } else {
-        info!("Wrote {num_records} records to: stdout");
-    }
+    info!(
+        "Wrote {num_records} records to: {}",
+        opath.as_deref().unwrap_or("stdout")
+    );
     if num_skipped > 0 {
         info!("Skipped {num_skipped} records");
     }
@@ -112,7 +79,11 @@ fn run_atomic(args: &EncodeCommand) -> Result<()> {
     Ok(())
 }
 
-fn process_queue(args: &EncodeCommand, queue: Vec<Vec<PathBuf>>, regex: &Regex) -> Result<()> {
+fn process_queue(
+    args: &EncodeCommand,
+    queue: Vec<Vec<PathBuf>>,
+    regex: &'static Regex,
+) -> Result<()> {
     let num_threads = args.output.threads();
 
     // Case where there are more threads than files
@@ -135,8 +106,7 @@ fn process_queue(args: &EncodeCommand, queue: Vec<Vec<PathBuf>>, regex: &Regex) 
 
         let mut handles = vec![];
         for (i, pair) in queue.into_iter().enumerate() {
-            let thread_args = args.clone();
-            let thread_regex = regex.clone();
+            let mut thread_args = args.clone();
             let mode = args.output.mode()?;
 
             // First `leftover_threads` files get one extra thread
@@ -147,8 +117,6 @@ fn process_queue(args: &EncodeCommand, queue: Vec<Vec<PathBuf>>, regex: &Regex) 
             };
 
             let handle = std::thread::spawn(move || -> Result<()> {
-                let mut file_args = thread_args.clone();
-
                 let inpaths: Vec<String> = pair
                     .iter()
                     .map(|path| path.to_str().unwrap().to_string())
@@ -156,23 +124,20 @@ fn process_queue(args: &EncodeCommand, queue: Vec<Vec<PathBuf>>, regex: &Regex) 
 
                 // A collated group always writes to the user-provided output path, even if
                 // it happens to contain only a single file (or file pair).
-                let collate = thread_args.input.batch_encoding_options.collate;
                 let paired = thread_args.input.batch_encoding_options.paired;
                 // `process_file_list` clears `-o` whenever it can't apply to this group.
-                let outpath = match (collate, &thread_args.output.output, pair.len()) {
-                    (_, Some(path), _) => path.clone(),
-                    (_, _, 1) => thread_regex
-                        .replace_all(&inpaths[0], mode.extension())
-                        .to_string(),
-                    (_, _, 2) if paired => generate_output_name(&pair, mode.extension())?,
+                let outpath = match (&thread_args.output.output, pair.len()) {
+                    (Some(path), _) => path.clone(),
+                    (_, 1) => regex.replace_all(&inpaths[0], mode.extension()).to_string(),
+                    (_, 2) if paired => generate_output_name(&pair, mode.extension())?,
                     _ => bail!("Output path must be provided when collating files"),
                 };
 
-                file_args.input.input = inpaths;
-                file_args.output.output = Some(outpath.clone());
-                file_args.output.options.threads = threads_for_this_file;
+                thread_args.input.input = inpaths;
+                thread_args.output.output = Some(outpath.clone());
+                thread_args.output.options.threads = threads_for_this_file;
 
-                match run_atomic(&file_args) {
+                match run_atomic(&thread_args) {
                     Ok(()) => (),
                     Err(err) => {
                         error!("Error generating output: {outpath}\n{err:?}\nSkipping.");
@@ -197,29 +162,26 @@ fn process_queue(args: &EncodeCommand, queue: Vec<Vec<PathBuf>>, regex: &Regex) 
 
     // Case where there are more files than threads (batching)
     } else {
-        let mut num_processed = 0;
-        loop {
-            let rbound = (num_processed + num_threads).min(queue.len());
-            if num_processed == rbound {
-                break;
-            }
-            let subqueue = queue[num_processed..rbound].to_vec();
-            num_processed += subqueue.len();
-            process_queue(args, subqueue, regex)?;
+        for chunk in queue.chunks(num_threads) {
+            process_queue(args, chunk.to_vec(), regex)?;
         }
     }
 
     Ok(())
 }
 
-/// Build the regex pattern for filtering input files
-fn build_file_regex(paired: bool) -> Result<Regex> {
-    let regex_str = if paired {
-        r"_R[12](_[^.]*)?\.(?:fastq|fq|fasta|fa)(?:\.gz|\.zst)?$"
+/// Regex for filtering input files (and naming their outputs)
+fn file_regex(paired: bool) -> &'static Regex {
+    static SINGLE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\.(fastq|fq|fasta|fa)(\.gz|\.zst)?$").unwrap());
+    static PAIRED: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"_R[12](_[^.]*)?\.(?:fastq|fq|fasta|fa)(?:\.gz|\.zst)?$").unwrap()
+    });
+    if paired {
+        &PAIRED
     } else {
-        r"\.(fastq|fq|fasta|fa)(\.gz|\.zst)?$"
-    };
-    Ok(Regex::new(regex_str)?)
+        &SINGLE
+    }
 }
 
 /// Filter paths based on regex and file type (regular file or FIFO)
@@ -244,23 +206,26 @@ fn process_file_list(args: &EncodeCommand, file_queue: Vec<PathBuf>) -> Result<(
     if file_queue.is_empty() {
         bail!("No files found");
     }
+    if args.output.pipe {
+        bail!("--pipe is not supported in batch mode");
+    }
 
     let mut sorted_queue = file_queue;
     sorted_queue.sort_unstable();
 
     // Build the regex for output naming
-    let regex = build_file_regex(args.input.batch_encoding_options.paired)?;
+    let regex = file_regex(args.input.batch_encoding_options.paired);
 
     // Pair or pull single files
     let pqueue = if args.input.batch_encoding_options.paired {
-        pair_r1_r2_files(&sorted_queue)
+        pair_r1_r2_files(&sorted_queue)?
     } else {
         pull_single_files(&sorted_queue)
-    }?;
+    };
 
     // Optionally collate
     let pqueue = if args.input.batch_encoding_options.collate {
-        collate_groups(&pqueue)
+        vec![pqueue.into_iter().flatten().collect()]
     } else {
         pqueue
     };
@@ -276,7 +241,6 @@ fn process_file_list(args: &EncodeCommand, file_queue: Vec<PathBuf>) -> Result<(
         && args.output.output.is_none()
         && pqueue.iter().any(|group| group.len() > group_size)
     {
-        error!("Output path must be provided when collating multiple files");
         bail!("Output path must be provided when collating multiple files");
     }
 
@@ -294,16 +258,15 @@ fn process_file_list(args: &EncodeCommand, file_queue: Vec<PathBuf>) -> Result<(
         args.output.output = None;
     }
 
-    process_queue(&args, pqueue, &regex)
+    process_queue(&args, pqueue, regex)
 }
 
 fn run_recursive(args: &EncodeCommand) -> Result<()> {
-    let args = args.to_owned();
     let dir = args.input.as_directory()?;
 
     info!("Processing files in directory: {}", dir.display());
 
-    let regex = build_file_regex(args.input.batch_encoding_options.paired)?;
+    let regex = file_regex(args.input.batch_encoding_options.paired);
 
     let dir_walker = if let Some(max_depth) = args.input.recursion.depth {
         WalkDir::new(dir).max_depth(max_depth)
@@ -316,10 +279,10 @@ fn run_recursive(args: &EncodeCommand) -> Result<()> {
             .into_iter()
             .filter_map(std::result::Result::ok)
             .map(|e| e.path().to_owned()),
-        &regex,
+        regex,
     )?;
 
-    process_file_list(&args, file_queue)
+    process_file_list(args, file_queue)
 }
 
 fn run_manifest(args: &EncodeCommand) -> Result<()> {
@@ -327,21 +290,21 @@ fn run_manifest(args: &EncodeCommand) -> Result<()> {
         bail!("No manifest file provided");
     };
 
-    let regex = build_file_regex(args.input.batch_encoding_options.paired)?;
+    let regex = file_regex(args.input.batch_encoding_options.paired);
 
     let handle = File::open(manifest).map(BufReader::new)?;
     let lines = handle.lines().collect::<Result<Vec<_>, _>>()?;
     let num_lines = lines.len();
-    let file_queue = filter_valid_paths(lines.into_iter().map(PathBuf::from), &regex)?;
+    let file_queue = filter_valid_paths(lines.into_iter().map(PathBuf::from), regex)?;
     warn_skipped(num_lines, file_queue.len());
 
     process_file_list(args, file_queue)
 }
 
 fn run_manifest_inline(args: &EncodeCommand) -> Result<()> {
-    let regex = build_file_regex(args.input.batch_encoding_options.paired)?;
+    let regex = file_regex(args.input.batch_encoding_options.paired);
 
-    let file_queue = filter_valid_paths(args.input.input.iter().map(PathBuf::from), &regex)?;
+    let file_queue = filter_valid_paths(args.input.input.iter().map(PathBuf::from), regex)?;
     warn_skipped(args.input.num_files(), file_queue.len());
 
     process_file_list(args, file_queue)
@@ -369,7 +332,12 @@ pub fn run(args: &EncodeCommand) -> Result<()> {
         run_manifest_inline(args)
     } else {
         trace!("launching encode-atomic");
-        run_atomic(args)
+        run_atomic(args).inspect_err(|_| {
+            if let Ok(Some(path)) = args.output_path() {
+                trace!("Removing partial file: {path}");
+                let _ = std::fs::remove_file(path);
+            }
+        })
     }
 }
 
@@ -431,70 +399,47 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_vbq_specialization() -> Result<()> {
-        for (fmt, comp, uncompressed, skip_qual) in iproduct!(
+    /// Encodes every format/compression with each subset of `flags` and checks the record count.
+    fn check_specialization(ext: &str, flags: [&str; 2]) -> Result<()> {
+        for (fmt, comp, first, second) in iproduct!(
             FileFormat::fastx_iter(),
             Compression::all(),
             [false, true],
             [false, true],
         ) {
             let in_tmp = write_fastx().format(fmt).comp(comp).call()?;
-            let out_tmp = NamedTempFile::with_suffix(".vbq")?;
+            let out_tmp = NamedTempFile::with_suffix(ext)?;
             let mut args = vec![
                 "encode",
                 in_tmp.path().to_str().unwrap(),
                 "-o",
                 out_tmp.path().to_str().unwrap(),
             ];
-            if uncompressed {
-                args.push("--uncompressed");
-            }
-            if skip_qual {
-                args.push("--skip-quality");
-            }
+            let used: Vec<_> = flags
+                .into_iter()
+                .zip([first, second])
+                .filter_map(|(flag, on)| on.then_some(flag))
+                .collect();
+            args.extend(&used);
             let cmd = crate::cli::EncodeCommand::try_parse_from(args)?;
             super::run(&cmd)?;
             assert_eq!(
                 count_binseq(out_tmp.path())?,
                 DEFAULT_NUM_RECORDS,
-                "vbq count wrong: {fmt:?} {comp:?} uncompressed={uncompressed} skip_qual={skip_qual}"
+                "{ext} count wrong: {fmt:?} {comp:?} flags={used:?}"
             );
         }
         Ok(())
     }
 
     #[test]
+    fn test_vbq_specialization() -> Result<()> {
+        check_specialization(".vbq", ["--uncompressed", "--skip-quality"])
+    }
+
+    #[test]
     fn test_cbq_specialization() -> Result<()> {
-        for (fmt, comp, skip_qual, skip_headers) in iproduct!(
-            FileFormat::fastx_iter(),
-            Compression::all(),
-            [false, true],
-            [false, true],
-        ) {
-            let in_tmp = write_fastx().format(fmt).comp(comp).call()?;
-            let out_tmp = NamedTempFile::with_suffix(".cbq")?;
-            let mut args = vec![
-                "encode",
-                in_tmp.path().to_str().unwrap(),
-                "-o",
-                out_tmp.path().to_str().unwrap(),
-            ];
-            if skip_qual {
-                args.push("--skip-quality");
-            }
-            if skip_headers {
-                args.push("--skip-headers");
-            }
-            let cmd = crate::cli::EncodeCommand::try_parse_from(args)?;
-            super::run(&cmd)?;
-            assert_eq!(
-                count_binseq(out_tmp.path())?,
-                DEFAULT_NUM_RECORDS,
-                "cbq count wrong: {fmt:?} {comp:?} skip_qual={skip_qual} skip_headers={skip_headers}"
-            );
-        }
-        Ok(())
+        check_specialization(".cbq", ["--skip-quality", "--skip-headers"])
     }
 
     #[test]
@@ -638,5 +583,27 @@ mod tests {
         let reader = binseq::BinseqReader::new(out_path.to_str().unwrap())?;
         assert!(matches!(reader, binseq::BinseqReader::Vbq(_)));
         Ok(())
+    }
+
+    #[test]
+    fn test_pipe_rejected_in_batch_mode() {
+        let args =
+            crate::cli::EncodeCommand::parse_from(["encode", "a.fq", "b.fq", "c.fq", "--pipe"]);
+        assert!(super::run(&args).is_err());
+    }
+
+    #[test]
+    fn test_failed_atomic_removes_partial_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let (bad, out) = (dir.path().join("bad.fq"), dir.path().join("o.bq"));
+        std::fs::write(&bad, "not fastq\n").unwrap();
+        let args = crate::cli::EncodeCommand::parse_from([
+            "encode",
+            bad.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        assert!(super::run(&args).is_err());
+        assert!(!out.exists());
     }
 }

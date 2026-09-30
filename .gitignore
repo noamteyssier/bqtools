@@ -23,3 +23,8 @@ split_outs/*
 *.fasta*
 *.fastq*
 bqtools-qc/*
+
+# generated docs
+docs/commands
+docs/llms*.txt
+site

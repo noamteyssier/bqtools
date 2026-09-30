@@ -20,3 +20,12 @@ test-all:
 
 install:
     cargo install --path .
+
+docs:
+    cargo run --all-features --bin bqdoc
+    uvx zensical build
+    rsync -a --include='*/' --include='*.md' --exclude='*' docs/ site/
+
+docs-serve:
+    cargo run --all-features --bin bqdoc
+    uvx zensical serve

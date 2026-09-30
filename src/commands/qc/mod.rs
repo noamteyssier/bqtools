@@ -1,12 +1,11 @@
 use anyhow::Result;
-use binseq::{BinseqReader, ParallelReader};
+use binseq::BinseqReader;
 use log::trace;
 
 use crate::cli::QcCommand;
 
 mod base_content;
 mod base_quality;
-mod config;
 mod dup_levels;
 mod gc_content;
 mod modules;
@@ -14,9 +13,6 @@ mod proc;
 mod report;
 mod seq_length;
 mod seq_quality;
-
-use config::QcConfig;
-use modules::QcModule;
 
 pub const PHRED_OFFSET: u8 = 33;
 pub type QualAbundance = [usize; 94];
@@ -26,28 +22,18 @@ pub fn run(args: &QcCommand) -> Result<()> {
     let reader = BinseqReader::new(args.input.path())?;
     let paired = reader.is_paired();
     let total_records = reader.num_records()?;
-    let range = args
-        .input
-        .span
-        .map(|mut span| span.get_range(total_records))
-        .transpose()?;
-    let processed_records = range.as_ref().map_or(total_records, |r| r.end - r.start);
+    let range = args.input.range(total_records)?;
 
     let mut proc = proc::QcProcessor::new(
-        &args.qc.outdir,
-        QcConfig::from_opts(&args.qc, range.as_ref().map_or(0, |r| r.start)),
+        &args.qc,
+        range.start,
         args.input.path().to_string(),
-        processed_records,
+        range.len(),
         paired,
     )?;
 
-    if let Some(range) = range {
-        trace!("Processing span: {}..{}", range.start, range.end);
-        reader.process_parallel_range(proc.clone(), args.qc.threads, range)?;
-    } else {
-        trace!("Processing all records: n={total_records}");
-        reader.process_parallel(proc.clone(), args.qc.threads)?;
-    }
+    trace!("Processing span: {}..{}", range.start, range.end);
+    reader.process_parallel_range(proc.clone(), args.qc.threads, range)?;
     proc.finish()?;
 
     Ok(())
@@ -162,6 +148,57 @@ mod tests {
             assert!(summary.contains("### R2"), "mode={mode:?}");
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_qc_json_summary() -> Result<()> {
+        let fq = write_fastx().nrec(100).call()?;
+        let bq = NamedTempFile::with_suffix(".cbq")?;
+        encode(&[fq.path()], bq.path())?;
+
+        let outdir = tempdir()?;
+        run_qc(bq.path(), outdir.path(), &["--json"])?;
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
+            outdir.path().join("summary.json"),
+        )?)?;
+        assert_eq!(v["reads"], 100);
+        assert_eq!(v["paired"], false);
+        assert!(v["modules"].is_object());
+        assert!(
+            v["modules"]["sequence_length"]["R1"]["min"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(v["modules"]["sequence_length"]["R2"].is_null());
+        assert_eq!(
+            v["modules"]["duplication"]["levels"]["R1"]["sampled_reads"],
+            100
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_qc_json_paired_has_r2() -> Result<()> {
+        let r1 = write_fastx().nrec(50).call()?;
+        let r2 = write_fastx().nrec(50).call()?;
+        let bq = NamedTempFile::with_suffix(".cbq")?;
+        encode(&[r1.path(), r2.path()], bq.path())?;
+
+        let outdir = tempdir()?;
+        run_qc(bq.path(), outdir.path(), &["--json", "--skip-dup-levels"])?;
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
+            outdir.path().join("summary.json"),
+        )?)?;
+        assert_eq!(v["paired"], true);
+        assert!(
+            v["modules"]["sequence_length"]["R2"]["min"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(v["modules"]["duplication"]["levels"].is_null());
         Ok(())
     }
 

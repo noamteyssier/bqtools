@@ -1,20 +1,21 @@
 use crate::{
     cli::{FileFormat, Mate},
     commands::{
-        decode::{write_record_pair, SplitWriter},
-        grep::{color::write_colored_record_pair, SimpleRange},
+        decode::{fill_qual, Batch, SeqRead, SplitWriter},
+        grep::{Engine, SimpleRange, Spans},
     },
 };
 use binseq::prelude::*;
-use parking_lot::Mutex;
-use std::sync::Arc;
-
-use super::{MatchRanges, PatternMatch};
+use fixedbitset::FixedBitSet;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+};
 
 #[derive(Clone)]
 #[allow(clippy::struct_excessive_bools)]
-pub struct FilterProcessor<Pm: PatternMatch> {
-    matcher: Pm,
+pub struct FilterProcessor {
+    engine: Engine,
 
     /// Match logic (true = AND, false = OR)
     and_logic: bool,
@@ -29,7 +30,7 @@ pub struct FilterProcessor<Pm: PatternMatch> {
     frac: bool,
 
     /// Match within range
-    range: Option<SimpleRange>,
+    range: SimpleRange,
 
     /// Match against the sequence header instead of the sequence
     header: bool,
@@ -40,15 +41,13 @@ pub struct FilterProcessor<Pm: PatternMatch> {
     /// Local total records processed
     local_total: usize,
 
-    /// Local primary/extended sequence match indices
-    smatches: MatchRanges,
-    xmatches: MatchRanges,
+    /// Local pattern hits, and where they are (only filled for colored output)
+    bits: FixedBitSet,
+    spans: Spans,
+    collect_spans: bool,
 
     /// Local write buffers
-    mixed: Vec<u8>, // General purpose, interleaved or singlets
-    left: Vec<u8>, // Used when writing pairs of files (R1/R2)
-    right: Vec<u8>,
-    interval_buffer: Vec<(usize, usize)>, // reused by colored writer for merging intervals
+    batch: Batch,
 
     /// Quality buffers
     squal: Vec<u8>,
@@ -57,24 +56,22 @@ pub struct FilterProcessor<Pm: PatternMatch> {
     /// Write Options
     format: FileFormat,
     mate: Option<Mate>,
-    is_split: bool,
-    color: bool,
 
     /// Global values
     global_writer: Arc<Mutex<SplitWriter>>,
-    global_count: Arc<Mutex<usize>>,
-    global_total: Arc<Mutex<usize>>,
+    global_count: Arc<AtomicUsize>,
+    global_total: Arc<AtomicUsize>,
 }
-impl<Pm: PatternMatch> FilterProcessor<Pm> {
+impl FilterProcessor {
     #[allow(clippy::fn_params_excessive_bools)]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        matcher: Pm,
+        engine: Engine,
         and_logic: bool,
         invert: bool,
         count: bool,
         frac: bool,
-        range: Option<SimpleRange>,
+        range: SimpleRange,
         header: bool,
         writer: SplitWriter,
         format: FileFormat,
@@ -82,15 +79,14 @@ impl<Pm: PatternMatch> FilterProcessor<Pm> {
         color: bool,
     ) -> Self {
         Self {
-            mixed: Vec::new(),
-            left: Vec::new(),
-            right: Vec::new(),
+            batch: Batch::new(&writer),
             squal: Vec::new(),
             xqual: Vec::new(),
-            smatches: MatchRanges::default(),
-            xmatches: MatchRanges::default(),
-            interval_buffer: Vec::new(),
-            matcher,
+            bits: engine.bitset(),
+            spans: Spans::default(),
+            // hit positions are only drawn for colored, non-inverted, written matches
+            collect_spans: color && !invert && !count,
+            engine,
             and_logic,
             invert,
             count,
@@ -99,58 +95,46 @@ impl<Pm: PatternMatch> FilterProcessor<Pm> {
             header,
             format,
             mate,
-            color,
-            is_split: writer.is_split(),
             global_writer: Arc::new(Mutex::new(writer)),
             local_count: 0,
             local_total: 0,
-            global_count: Arc::new(Mutex::new(0)),
-            global_total: Arc::new(Mutex::new(0)),
+            global_count: Arc::new(AtomicUsize::new(0)),
+            global_total: Arc::new(AtomicUsize::new(0)),
         }
     }
-    pub fn clear_matches(&mut self) {
-        self.smatches.clear();
-        self.xmatches.clear();
+    fn pattern_match(&mut self, sbuf: &[u8], xbuf: &[u8]) -> bool {
+        let (primary, extended) = (self.range.slice(sbuf), self.range.slice(xbuf));
+
+        let found = match (self.and_logic, self.collect_spans) {
+            // AND gives up at the first missing pattern; positions are only
+            // worth collecting once everything is known to hit
+            (true, _) => self.engine.all(primary, extended, &mut self.bits),
+            // OR without positions only needs to know whether anything hits
+            (false, false) => self.engine.any(primary, extended),
+            // a separate yes/no pass would scan matching records twice
+            (false, true) => {
+                self.collect(primary, extended);
+                !self.bits.is_clear()
+            }
+        };
+        if found && self.and_logic && self.collect_spans {
+            self.collect(primary, extended);
+        }
+        found != self.invert
     }
 
-    pub fn pattern_match(&mut self, sbuf: &[u8], xbuf: &[u8]) -> bool {
-        let (primary, extended) = if let Some(range) = self.range {
-            (range.slice(sbuf), range.slice(xbuf))
-        } else {
-            (sbuf, xbuf)
-        };
-
-        let found_either = self.matcher.match_either(
-            primary,
-            extended,
-            &mut self.smatches,
-            &mut self.xmatches,
-            self.and_logic,
-        );
-        let found_primary = self
-            .matcher
-            .match_primary(primary, &mut self.smatches, self.and_logic);
-        let found_secondary =
-            self.matcher
-                .match_secondary(extended, &mut self.xmatches, self.and_logic);
-
-        let pred = if self.and_logic {
-            found_either && found_primary && found_secondary
-        } else {
-            !self.smatches.is_empty() || !self.xmatches.is_empty()
-        };
-
-        if self.invert {
-            self.clear_matches(); // ensure no partial matches are highlighted
-            !pred
-        } else {
-            pred
-        }
+    /// Finds every pattern and where it hits, for colored output.
+    fn collect(&mut self, primary: &[u8], extended: &[u8]) {
+        self.bits.clear();
+        self.spans.clear();
+        self.engine
+            .hit(primary, extended, &mut self.bits, Some(&mut self.spans));
+        self.spans.shift(self.range.offset());
     }
     pub fn pprint_counts(&self) {
-        let count = *self.global_count.lock();
+        let count = self.global_count.load(Ordering::Relaxed);
         if self.frac {
-            let total = *self.global_total.lock();
+            let total = self.global_total.load(Ordering::Relaxed);
             let frac = if total > 0 {
                 count as f64 / total as f64
             } else {
@@ -164,9 +148,8 @@ impl<Pm: PatternMatch> FilterProcessor<Pm> {
     }
 }
 
-impl<Pm: PatternMatch> ParallelProcessor for FilterProcessor<Pm> {
+impl ParallelProcessor for FilterProcessor {
     fn process_record<B: BinseqRecord>(&mut self, record: B) -> binseq::Result<()> {
-        self.clear_matches();
         self.local_total += 1;
 
         let sbuf = record.sseq();
@@ -186,59 +169,31 @@ impl<Pm: PatternMatch> ParallelProcessor for FilterProcessor<Pm> {
             let squal = if record.has_quality() {
                 record.squal()
             } else {
-                if self.squal.len() < sbuf.len() {
-                    self.squal.resize(sbuf.len(), b'?');
-                }
-                &self.squal
+                fill_qual(&mut self.squal, sbuf.len())
             };
 
-            let xqual = if record.is_paired() {
-                if record.has_quality() {
-                    record.xqual()
-                } else {
-                    if self.xqual.len() < xbuf.len() {
-                        self.xqual.resize(xbuf.len(), b'?');
-                    }
-                    &self.xqual
-                }
+            let xqual = if record.is_paired() && record.has_quality() {
+                record.xqual()
             } else {
-                if self.xqual.len() < xbuf.len() {
-                    self.xqual.resize(xbuf.len(), b'?');
-                }
-                &self.xqual
+                fill_qual(&mut self.xqual, xbuf.len())
             };
 
-            if self.color {
-                write_colored_record_pair(
-                    &mut self.mixed,
-                    self.mate,
-                    sbuf,
-                    squal,
-                    record.sheader(),
-                    xbuf,
-                    xqual,
-                    record.xheader(),
-                    &self.smatches,
-                    &self.xmatches,
-                    self.format,
-                    &mut self.interval_buffer,
-                )
-            } else {
-                write_record_pair(
-                    &mut self.left,
-                    &mut self.right,
-                    &mut self.mixed,
-                    self.mate,
-                    self.is_split,
-                    sbuf,
-                    squal,
-                    record.sheader(),
-                    xbuf,
-                    xqual,
-                    record.xheader(),
-                    self.format,
-                )
-            }?;
+            self.batch.push_pair(
+                self.mate.unwrap_or(Mate::One),
+                SeqRead {
+                    header: record.sheader(),
+                    seq: sbuf,
+                    qual: squal,
+                },
+                SeqRead {
+                    header: record.xheader(),
+                    seq: xbuf,
+                    qual: xqual,
+                },
+                self.collect_spans
+                    .then_some([&mut self.spans.primary, &mut self.spans.secondary]),
+                self.format,
+            )?;
         }
 
         Ok(())
@@ -247,28 +202,20 @@ impl<Pm: PatternMatch> ParallelProcessor for FilterProcessor<Pm> {
     fn on_batch_complete(&mut self) -> binseq::Result<()> {
         // Lock the mutex to write to the global buffer
         if !self.count {
-            let mut writer = self.global_writer.lock();
-            if writer.is_split() {
-                writer.write_split(&self.left, true)?;
-                writer.write_split(&self.right, false)?;
-            } else {
-                writer.write_interleaved(&self.mixed)?;
-            }
-            writer.flush()?;
+            let mut writer = self.global_writer.lock().unwrap();
+            writer.write_batch(&self.batch)?;
         }
 
         // Clear the local buffer and reset the local record count
-        self.mixed.clear();
-        self.left.clear();
-        self.right.clear();
+        self.batch.clear();
 
         // Increment the global count and reset local
-        *self.global_count.lock() += self.local_count;
-        self.local_count = 0;
+        self.global_count
+            .fetch_add(std::mem::take(&mut self.local_count), Ordering::Relaxed);
 
         // Increment the global total and reset local
-        *self.global_total.lock() += self.local_total;
-        self.local_total = 0;
+        self.global_total
+            .fetch_add(std::mem::take(&mut self.local_total), Ordering::Relaxed);
 
         Ok(())
     }

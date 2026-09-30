@@ -1,34 +1,29 @@
-use std::{io::Write, path::Path, sync::Arc};
+use std::{io::Write, path::Path};
 
 use anyhow::Result;
 use binseq::BinseqRecord;
-use parking_lot::Mutex;
 use serde::Serialize;
+use serde_json::{json, Value};
 
-use super::{report::table, QualAbundance, DEFAULT_QUAL_ABUNDANCE, PHRED_OFFSET};
-use crate::commands::{match_output, qc::modules::QcModule, utils::make_directory};
-
-const BASE_QUALITY_PRIMARY_PATH: &str = "base_quality_R1.tsv";
-const BASE_QUALITY_EXTENDED_PATH: &str = "base_quality_R2.tsv";
+use super::{
+    report::{add_assign, stats, table, write_tsv, Hist, Pair},
+    QualAbundance, DEFAULT_QUAL_ABUNDANCE, PHRED_OFFSET,
+};
 
 #[derive(Serialize)]
-pub struct BaseQualityRecord {
+struct BaseQualityRecord {
     pos: usize,
     qual: usize,
     count: usize,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct BaseHistogram {
+struct BaseHistogram {
     /// Outer: position
     /// Inner: quality
     inner: Vec<QualAbundance>,
 }
 impl BaseHistogram {
-    /// Checks if empty
-    fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
     /// Number of positions tracked
     fn len(&self) -> usize {
         self.inner.len()
@@ -48,72 +43,18 @@ impl BaseHistogram {
                 pos_vec[q.min(pos_vec.len() - 1)] += 1;
             });
     }
-    fn ingest(&mut self, other: &mut Self) {
-        if self.len() < other.len() {
-            self.inner.resize(other.len(), DEFAULT_QUAL_ABUNDANCE);
-        }
-        self.inner
-            .iter_mut()
-            .zip(other.inner.iter_mut())
-            .for_each(|(self_pos, other_pos)| {
-                self_pos
-                    .iter_mut()
-                    .zip(other_pos.iter_mut())
-                    .for_each(|(self_q, other_q)| {
-                        *self_q += *other_q;
-                        *other_q = 0;
-                    });
-            });
-    }
-    fn serialize_to<W: Write>(&self, wtr: &mut W) -> Result<()> {
-        if self.is_empty() {
-            return Ok(());
-        }
-
-        let mut ser = csv::WriterBuilder::default()
-            .delimiter(b'\t')
-            .has_headers(true)
-            .from_writer(wtr);
-
-        self.inner
-            .iter()
-            .enumerate()
-            .try_for_each(|(pos, inner)| -> Result<()> {
-                inner
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, count)| **count > 0)
-                    .map(|(qual, count)| (qual, *count))
-                    .try_for_each(|(qual, count)| -> Result<()> {
-                        ser.serialize(&BaseQualityRecord { pos, qual, count })
-                            .map_err(Into::into)
-                    })
-            })?;
-
-        ser.flush().map_err(Into::into)
-    }
 
     /// Mean quality score at each position.
     fn position_means(&self) -> Vec<f64> {
-        self.inner
-            .iter()
-            .map(|counts| {
-                let total: usize = counts.iter().sum();
-                if total == 0 {
-                    0.0
-                } else {
-                    let sum: usize = counts.iter().enumerate().map(|(q, &c)| q * c).sum();
-                    sum as f64 / total as f64
-                }
-            })
-            .collect()
+        self.inner.iter().map(|counts| stats(counts).1).collect()
     }
 
-    fn summary_table(&self) -> Option<String> {
+    /// `(positions, overall mean, (pos, mean) of lowest, (pos, mean) of highest)`.
+    #[allow(clippy::type_complexity)]
+    fn headline(&self) -> Option<(usize, f64, (usize, f64), (usize, f64))> {
         if self.is_empty() {
             return None;
         }
-
         let mut num = 0usize;
         let mut den = 0usize;
         for counts in &self.inner {
@@ -129,23 +70,60 @@ impl BaseHistogram {
         };
 
         let means = self.position_means();
-        let (min_pos, min_mean) = means
+        let min = means
             .iter()
             .copied()
             .enumerate()
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .unwrap_or((0, 0.0));
-        let (max_pos, max_mean) = means
+        let max = means
             .iter()
             .copied()
             .enumerate()
             .max_by(|a, b| a.1.total_cmp(&b.1))
             .unwrap_or((0, 0.0));
+        Some((means.len(), overall_mean, min, max))
+    }
+}
+impl Hist for BaseHistogram {
+    /// Checks if empty
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
 
+    fn ingest(&mut self, other: &mut Self) {
+        if self.len() < other.len() {
+            self.inner.resize(other.len(), DEFAULT_QUAL_ABUNDANCE);
+        }
+        for (dst, src) in self.inner.iter_mut().zip(&mut other.inner) {
+            add_assign(dst, src);
+        }
+    }
+
+    fn serialize_to<W: Write>(&self, wtr: &mut W) -> Result<()> {
+        if self.is_empty() {
+            return Ok(());
+        }
+
+        write_tsv(
+            wtr,
+            self.inner.iter().enumerate().flat_map(|(pos, inner)| {
+                inner
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &count)| count > 0)
+                    .map(move |(qual, &count)| BaseQualityRecord { pos, qual, count })
+            }),
+        )
+    }
+
+    fn summary_table(&self) -> Option<String> {
+        let (positions, overall_mean, (min_pos, min_mean), (max_pos, max_mean)) =
+            self.headline()?;
         Some(table(
             &["Metric", "Value"],
             &[
-                vec!["Positions".into(), means.len().to_string()],
+                vec!["Positions".into(), positions.to_string()],
                 vec!["Mean Quality".into(), format!("{overall_mean:.2}")],
                 vec![
                     "Lowest Mean Quality".into(),
@@ -158,67 +136,40 @@ impl BaseHistogram {
             ],
         ))
     }
+
+    fn json(&self) -> Option<Value> {
+        let (positions, mean, (min_pos, min_mean), (max_pos, max_mean)) = self.headline()?;
+        Some(json!({
+            "positions": positions,
+            "mean_quality": mean,
+            "lowest": {"pos": min_pos, "mean": min_mean},
+            "highest": {"pos": max_pos, "mean": max_mean},
+        }))
+    }
 }
 
 #[derive(Clone, Default)]
-pub struct PerBaseSequenceQuality {
-    /// thread - per base sequence quality (primary)
-    t_base_squal: BaseHistogram,
-    /// thread - per base sequence quality (extended)
-    t_base_xqual: BaseHistogram,
-    /// thread - number of records
-    t_n_records: usize,
-
-    /// global - per base sequence quality (primary)
-    base_squal: Arc<Mutex<BaseHistogram>>,
-    /// global - per base sequence quality (extended)
-    base_xqual: Arc<Mutex<BaseHistogram>>,
-    /// global - number of records
-    n_records: Arc<Mutex<usize>>,
-}
-impl QcModule for PerBaseSequenceQuality {
-    fn push<R: BinseqRecord>(&mut self, record: &R) {
-        self.t_base_squal.push(record.squal());
-        self.t_base_xqual.push(record.xqual());
-        self.t_n_records += 1;
+pub struct PerBaseSequenceQuality(Pair<BaseHistogram>);
+impl PerBaseSequenceQuality {
+    pub fn push<R: BinseqRecord>(&mut self, record: &R) {
+        self.0.t[0].push(record.squal());
+        self.0.t[1].push(record.xqual());
     }
 
-    fn sync_final(&mut self) {
-        self.base_squal.lock().ingest(&mut self.t_base_squal);
-        self.base_xqual.lock().ingest(&mut self.t_base_xqual);
-
-        // handle total
-        *self.n_records.lock() += self.t_n_records;
-        self.t_n_records = 0;
+    pub fn sync_final(&mut self) {
+        self.0.sync_final();
     }
 
-    fn finish<P: AsRef<Path>>(&mut self, outdir: P) -> Result<()> {
-        if !outdir.as_ref().exists() {
-            make_directory(outdir.as_ref())?;
-        }
-
-        let write_to = |base_qual: &BaseHistogram, primary: bool| -> Result<()> {
-            if base_qual.is_empty() {
-                return Ok(());
-            }
-            let mut handle = if primary {
-                match_output(Some(outdir.as_ref().join(BASE_QUALITY_PRIMARY_PATH)))
-            } else {
-                match_output(Some(outdir.as_ref().join(BASE_QUALITY_EXTENDED_PATH)))
-            }?;
-            base_qual.serialize_to(&mut handle)
-        };
-
-        write_to(&self.base_squal.lock(), true)?;
-        write_to(&self.base_xqual.lock(), false)?;
-
-        Ok(())
+    pub fn finish(&mut self, outdir: &Path) -> Result<()> {
+        self.0.write(outdir, "base_quality")
     }
 
-    fn summarize(&self) -> String {
-        let primary = self.base_squal.lock().summary_table();
-        let extended = self.base_xqual.lock().summary_table();
-        super::report::dual_section("Per-Base Sequence Quality", primary, extended)
+    pub fn summarize(&self) -> String {
+        self.0.summarize("Per-Base Sequence Quality")
+    }
+
+    pub fn json(&self) -> Value {
+        self.0.json()
     }
 }
 

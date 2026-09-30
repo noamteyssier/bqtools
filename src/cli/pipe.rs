@@ -22,34 +22,34 @@ pub struct PipeCommand {
 pub struct PipeOptions {
     /// Number of FIFOs to create (0 = number of CPUs; capped at CPU count)
     ///
-    /// For paired input this is split into p/2 R1/R2 pairs, so `{n}` ranges
+    /// For paired input this is split into p/2 R1/R2 pairs, so `{​n}` ranges
     /// over 0..p/2.
     #[clap(short = 'p', long, default_value = "0")]
     num_pipes: usize,
 
     /// Record format written to each FIFO
     #[clap(short, long, default_value = "q", value_parser = format_parser(&[FileFormat::Fasta, FileFormat::Fastq]))]
-    format: FileFormat,
+    pub format: FileFormat,
 
     /// Base path for the FIFOs
     ///
-    /// FIFOs are named `{basepath}_{n}.{fa|fq}` (single-end) or
-    /// `{basepath}_{n}_R1.{ext}` / `{basepath}_{n}_R2.{ext}` (paired), with `n`
+    /// FIFOs are named `{basepath}_{​n}.{fa|fq}` (single-end) or
+    /// `{basepath}_{​n}_R1.{ext}` / `{basepath}_{​n}_R2.{ext}` (paired), with `n`
     /// starting at 0. An existing FIFO at that path is reused.
     #[clap(short, long, default_value = "bqtools_fifo")]
-    basepath: String,
+    pub basepath: String,
 
     /// Execute a shell command once per pipe, substituting FIFO paths.
     ///
     /// Use `{}` for the FIFO path (single-end), or `{R1}` / `{R2}` for the
     /// respective paths (paired-end). Referencing only one of `{R1}` / `{R2}`
     /// processes just that mate — the other channel's FIFOs are never created.
-    /// `{n}` expands to the pipe index, useful for per-shard output paths.
+    /// `{​n}` expands to the pipe index, useful for per-shard output paths.
     /// Commands run via `sh -c`; the template must contain the placeholder for
     /// the input type, and the run exits non-zero if any command fails.
     /// Mutually exclusive with `--exec-batch`.
     #[clap(short = 'x', long, conflicts_with = "exec_batch")]
-    exec: Option<String>,
+    pub exec: Option<String>,
 
     /// Execute a single shell command with all FIFO paths substituted.
     ///
@@ -57,26 +57,14 @@ pub struct PipeOptions {
     /// space-joined list of every matching FIFO path. Writing `{R1} {R2}`
     /// adjacently interleaves the paths as pairs (`r1_0` `r2_0` `r1_1` `r2_1` …) so
     /// positional-argument tools receive each pair together.
-    /// `{n}` is not expanded. Mutually exclusive with `--exec`.
+    /// `{​n}` is not expanded. Mutually exclusive with `--exec`.
     #[clap(short = 'X', long, conflicts_with = "exec")]
-    exec_batch: Option<String>,
+    pub exec_batch: Option<String>,
 }
 
 impl PipeCommand {
-    pub fn format(&self) -> FileFormat {
-        self.pipe.format
-    }
     pub fn num_pipes(&self) -> usize {
         clamp_threads(self.pipe.num_pipes)
-    }
-    pub fn basepath(&self) -> &str {
-        &self.pipe.basepath
-    }
-    pub fn exec(&self) -> Option<&str> {
-        self.pipe.exec.as_deref()
-    }
-    pub fn exec_batch(&self) -> Option<&str> {
-        self.pipe.exec_batch.as_deref()
     }
 }
 
@@ -90,9 +78,9 @@ mod tests {
     #[test]
     fn test_format_defaults_to_fastq_and_rejects_non_fastx() {
         let cmd = PipeCommand::try_parse_from(["pipe", "x.cbq"]).unwrap();
-        assert_eq!(cmd.format(), FileFormat::Fastq);
+        assert_eq!(cmd.pipe.format, FileFormat::Fastq);
         let cmd = PipeCommand::try_parse_from(["pipe", "x.cbq", "-f", "a"]).unwrap();
-        assert_eq!(cmd.format(), FileFormat::Fasta);
+        assert_eq!(cmd.pipe.format, FileFormat::Fasta);
         for bad in ["b", "t"] {
             assert!(PipeCommand::try_parse_from(["pipe", "x.cbq", "-f", bad]).is_err());
         }

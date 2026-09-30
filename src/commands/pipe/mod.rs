@@ -2,19 +2,15 @@ pub mod exec;
 pub mod processor;
 pub mod utils;
 
-use std::io::Write;
 use std::thread;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use binseq::BinseqReader;
 use log::info;
 
 use crate::cli::{FileFormat, PipeCommand};
-use exec::ExecMode;
 use processor::PipeProcessor;
-use utils::{create_fifos, FifoGuard};
-
-pub type BoxedWriter = Box<dyn Write + Send>;
+use utils::{create_fifos, pairs, FifoGuard};
 
 /// Simple enum to represent the type of record pair to process.
 #[derive(Clone, Copy, Debug)]
@@ -37,13 +33,10 @@ pub enum PairedChannels {
 }
 
 pub fn run(args: &PipeCommand) -> Result<()> {
-    if args.input.span.is_some() {
-        bail!("--span is not supported by the pipe subcommand");
-    }
-
-    let format = args.format();
+    let opts = &args.pipe;
+    let format = opts.format;
     let reader = BinseqReader::new(args.input.path())?;
-    let num_records = reader.num_records()?;
+    let span = args.input.range(reader.num_records()?)?;
     let paired = reader.is_paired();
     let num_pipes = if paired {
         (args.num_pipes() / 2).max(1)
@@ -53,7 +46,8 @@ pub fn run(args: &PipeCommand) -> Result<()> {
 
     // Validate exec templates before creating FIFOs so a bad template fails fast
     // rather than leaving an open FIFO with no reader (which would hang).
-    if let Some(t) = args.exec().or_else(|| args.exec_batch()) {
+    let tmpl = opts.exec.as_deref().or(opts.exec_batch.as_deref());
+    if let Some(t) = tmpl {
         exec::validate_template(t, paired)?;
     }
 
@@ -62,33 +56,28 @@ pub fn run(args: &PipeCommand) -> Result<()> {
     // FIFO and writer entirely. Without exec, both channels are always created.
     // Only meaningful for paired files; unpaired always uses a single unlabelled FIFO.
     let channels = if paired {
-        args.exec()
-            .or_else(|| args.exec_batch())
-            .map_or(PairedChannels::Both, exec::required_channels)
+        tmpl.map_or(PairedChannels::Both, exec::required_channels)
     } else {
         PairedChannels::Both
     };
 
-    let basename = args.basepath();
+    let basename = opts.basepath.as_str();
     // Wrap the FIFOs in a guard immediately so they are unlinked on any early
     // return or panic below, not just on the happy path.
-    let fifo_guard = FifoGuard::new(create_fifos(basename, paired, num_pipes, format, channels)?);
+    let fifo_guard = FifoGuard(create_fifos(basename, paired, num_pipes, format, channels)?);
     info!(
         "{} FIFOs created. Waiting for readers to connect...",
-        fifo_guard.paths().len()
+        fifo_guard.0.len()
     );
 
-    let records_per_pipe = num_records / num_pipes;
+    let records_per_pipe = span.len() / num_pipes;
 
     // Spawn consumer processes before writer threads: opening a FIFO for writing
     // blocks until a reader connects, so readers must be in-flight first.
-    let exec_mode = if let Some(t) = args.exec() {
-        Some(ExecMode::PerFifo(t))
-    } else {
-        args.exec_batch().map(ExecMode::Batch)
-    };
-    let mut consumers = match exec_mode {
-        Some(mode) => exec::spawn_consumers(mode, basename, paired, num_pipes, format)?,
+    let mut consumers = match tmpl {
+        Some(t) => {
+            exec::spawn_consumers(t, opts.exec.is_none(), basename, paired, num_pipes, format)?
+        }
         None => Vec::new(),
     };
 
@@ -96,41 +85,20 @@ pub fn run(args: &PipeCommand) -> Result<()> {
     // Named pipes block on open until both reader and writer connect.
     let mut handles = Vec::new();
     for pid in 0..num_pipes {
-        let rstart = records_per_pipe * pid;
+        let rstart = span.start + records_per_pipe * pid;
         let rend = if pid == num_pipes - 1 {
-            num_records
+            span.end
         } else {
             rstart + records_per_pipe
         };
 
-        if paired {
-            if matches!(channels, PairedChannels::Both | PairedChannels::R1Only) {
-                handles.push(spawn_pipe_thread(
-                    basename.to_string(),
-                    args.input.path().to_string(),
-                    pid,
-                    format,
-                    RecordPair::R1,
-                    rstart..rend,
-                ));
-            }
-            if matches!(channels, PairedChannels::Both | PairedChannels::R2Only) {
-                handles.push(spawn_pipe_thread(
-                    basename.to_string(),
-                    args.input.path().to_string(),
-                    pid,
-                    format,
-                    RecordPair::R2,
-                    rstart..rend,
-                ));
-            }
-        } else {
+        for &pair in pairs(paired, channels) {
             handles.push(spawn_pipe_thread(
                 basename.to_string(),
                 args.input.path().to_string(),
                 pid,
                 format,
-                RecordPair::Unpaired,
+                pair,
                 rstart..rend,
             ));
         }
@@ -178,25 +146,45 @@ mod tests {
 
     use crate::testutils::{count_fastx_records, write_fastx, DEFAULT_NUM_RECORDS};
 
-    fn encode(in_path: &std::path::Path, out_path: &std::path::Path) -> Result<()> {
+    fn single_cbq() -> Result<NamedTempFile> {
+        let fastq = write_fastx().call()?;
+        let cbq = NamedTempFile::with_suffix(".cbq")?;
         let cmd = crate::cli::EncodeCommand::try_parse_from([
             "encode",
-            in_path.to_str().unwrap(),
+            fastq.path().to_str().unwrap(),
             "-o",
-            out_path.to_str().unwrap(),
+            cbq.path().to_str().unwrap(),
         ])?;
-        crate::commands::encode::run(&cmd)
+        crate::commands::encode::run(&cmd)?;
+        Ok(cbq)
+    }
+
+    fn paired_cbq() -> Result<NamedTempFile> {
+        let r1 = write_fastx().call()?;
+        let r2 = write_fastx().call()?;
+        let cbq = NamedTempFile::with_suffix(".cbq")?;
+        let cmd = crate::cli::EncodeCommand::try_parse_from([
+            "encode",
+            r1.path().to_str().unwrap(),
+            r2.path().to_str().unwrap(),
+            "-o",
+            cbq.path().to_str().unwrap(),
+        ])?;
+        crate::commands::encode::run(&cmd)?;
+        Ok(cbq)
+    }
+
+    fn basepath(dir: &tempfile::TempDir) -> String {
+        dir.path().join("pipe").to_str().unwrap().to_string()
     }
 
     /// Single-end pipe with `-x`: one command per FIFO, `{}` substituted with the path.
     #[test]
     fn test_pipe_exec_single() -> Result<()> {
-        let fastq = write_fastx().call()?;
-        let cbq = NamedTempFile::with_suffix(".cbq")?;
-        encode(fastq.path(), cbq.path())?;
+        let cbq = single_cbq()?;
 
         let fifo_dir = tempfile::tempdir()?;
-        let basepath = fifo_dir.path().join("pipe").to_str().unwrap().to_string();
+        let basepath = basepath(&fifo_dir);
         let out = NamedTempFile::with_suffix(".fastq")?;
         let out_path = out.path().to_str().unwrap().to_string();
 
@@ -220,15 +208,41 @@ mod tests {
         Ok(())
     }
 
+    /// `--span` restricts the records piped, shared out across the FIFOs.
+    #[test]
+    fn test_pipe_span() -> Result<()> {
+        let cbq = single_cbq()?;
+
+        let fifo_dir = tempfile::tempdir()?;
+        let basepath = basepath(&fifo_dir);
+        let out = NamedTempFile::with_suffix(".fastq")?;
+        let out_path = out.path().to_str().unwrap().to_string();
+
+        let cmd = crate::cli::PipeCommand::try_parse_from([
+            "pipe",
+            cbq.path().to_str().unwrap(),
+            "--span",
+            "10..60",
+            "-b",
+            &basepath,
+            "-p",
+            "2",
+            "-X",
+            &format!("cat {{}} > {out_path}"),
+        ])?;
+        super::run(&cmd)?;
+
+        assert_eq!(count_fastx_records(out.path())?, 50, "--span 10..60");
+        Ok(())
+    }
+
     /// Single-end pipe with `-X`: one command receives all FIFO paths space-joined via `{}`.
     #[test]
     fn test_pipe_exec_batch_single() -> Result<()> {
-        let fastq = write_fastx().call()?;
-        let cbq = NamedTempFile::with_suffix(".cbq")?;
-        encode(fastq.path(), cbq.path())?;
+        let cbq = single_cbq()?;
 
         let fifo_dir = tempfile::tempdir()?;
-        let basepath = fifo_dir.path().join("pipe").to_str().unwrap().to_string();
+        let basepath = basepath(&fifo_dir);
         let out = NamedTempFile::with_suffix(".fastq")?;
         let out_path = out.path().to_str().unwrap().to_string();
 
@@ -255,20 +269,10 @@ mod tests {
     /// Paired-end pipe with `-x`: one command per pair, `{R1}` and `{R2}` substituted.
     #[test]
     fn test_pipe_exec_paired() -> Result<()> {
-        let r1 = write_fastx().call()?;
-        let r2 = write_fastx().call()?;
-        let cbq = NamedTempFile::with_suffix(".cbq")?;
-        let encode_cmd = crate::cli::EncodeCommand::try_parse_from([
-            "encode",
-            r1.path().to_str().unwrap(),
-            r2.path().to_str().unwrap(),
-            "-o",
-            cbq.path().to_str().unwrap(),
-        ])?;
-        crate::commands::encode::run(&encode_cmd)?;
+        let cbq = paired_cbq()?;
 
         let fifo_dir = tempfile::tempdir()?;
-        let basepath = fifo_dir.path().join("pipe").to_str().unwrap().to_string();
+        let basepath = basepath(&fifo_dir);
         let r1_out = NamedTempFile::with_suffix(".fastq")?;
         let r2_out = NamedTempFile::with_suffix(".fastq")?;
         let r1_path = r1_out.path().to_str().unwrap().to_string();
@@ -303,20 +307,10 @@ mod tests {
     /// (`r1_0` `r2_0` `r1_1` `r2_1` …) so positional-argument tools receive pairs together.
     #[test]
     fn test_pipe_exec_batch_paired_interleaved() -> Result<()> {
-        let r1 = write_fastx().call()?;
-        let r2 = write_fastx().call()?;
-        let cbq = NamedTempFile::with_suffix(".cbq")?;
-        let encode_cmd = crate::cli::EncodeCommand::try_parse_from([
-            "encode",
-            r1.path().to_str().unwrap(),
-            r2.path().to_str().unwrap(),
-            "-o",
-            cbq.path().to_str().unwrap(),
-        ])?;
-        crate::commands::encode::run(&encode_cmd)?;
+        let cbq = paired_cbq()?;
 
         let fifo_dir = tempfile::tempdir()?;
-        let basepath = fifo_dir.path().join("pipe").to_str().unwrap().to_string();
+        let basepath = basepath(&fifo_dir);
         let out = NamedTempFile::with_suffix(".fastq")?;
         let out_path = out.path().to_str().unwrap().to_string();
 
@@ -345,12 +339,10 @@ mod tests {
     /// Missing `{}` in a single-end template must be caught before any FIFO is created.
     #[test]
     fn test_pipe_exec_missing_token_single() -> Result<()> {
-        let fastq = write_fastx().call()?;
-        let cbq = NamedTempFile::with_suffix(".cbq")?;
-        encode(fastq.path(), cbq.path())?;
+        let cbq = single_cbq()?;
 
         let fifo_dir = tempfile::tempdir()?;
-        let basepath = fifo_dir.path().join("pipe").to_str().unwrap().to_string();
+        let basepath = basepath(&fifo_dir);
 
         let cmd = crate::cli::PipeCommand::try_parse_from([
             "pipe",
@@ -370,20 +362,10 @@ mod tests {
     /// A paired template with neither `{R1}` nor `{R2}` must be caught before any FIFO is created.
     #[test]
     fn test_pipe_exec_missing_token_paired() -> Result<()> {
-        let r1 = write_fastx().call()?;
-        let r2 = write_fastx().call()?;
-        let cbq = NamedTempFile::with_suffix(".cbq")?;
-        let encode_cmd = crate::cli::EncodeCommand::try_parse_from([
-            "encode",
-            r1.path().to_str().unwrap(),
-            r2.path().to_str().unwrap(),
-            "-o",
-            cbq.path().to_str().unwrap(),
-        ])?;
-        crate::commands::encode::run(&encode_cmd)?;
+        let cbq = paired_cbq()?;
 
         let fifo_dir = tempfile::tempdir()?;
-        let basepath = fifo_dir.path().join("pipe").to_str().unwrap().to_string();
+        let basepath = basepath(&fifo_dir);
 
         // Template has neither {R1} nor {R2} — nothing to read from either FIFO.
         let cmd = crate::cli::PipeCommand::try_parse_from([
@@ -405,12 +387,10 @@ mod tests {
     /// separate files without stdout collisions.
     #[test]
     fn test_pipe_exec_pipe_index_token() -> Result<()> {
-        let fastq = write_fastx().call()?;
-        let cbq = NamedTempFile::with_suffix(".cbq")?;
-        encode(fastq.path(), cbq.path())?;
+        let cbq = single_cbq()?;
 
         let fifo_dir = tempfile::tempdir()?;
-        let basepath = fifo_dir.path().join("pipe").to_str().unwrap().to_string();
+        let basepath = basepath(&fifo_dir);
         let out_dir = tempfile::tempdir()?;
         let out_prefix = out_dir.path().join("shard").to_str().unwrap().to_string();
 
@@ -438,20 +418,10 @@ mod tests {
     /// written; R2 is silently skipped. This is valid — one-mate-only processing.
     #[test]
     fn test_pipe_exec_paired_r1_only() -> Result<()> {
-        let r1 = write_fastx().call()?;
-        let r2 = write_fastx().call()?;
-        let cbq = NamedTempFile::with_suffix(".cbq")?;
-        let encode_cmd = crate::cli::EncodeCommand::try_parse_from([
-            "encode",
-            r1.path().to_str().unwrap(),
-            r2.path().to_str().unwrap(),
-            "-o",
-            cbq.path().to_str().unwrap(),
-        ])?;
-        crate::commands::encode::run(&encode_cmd)?;
+        let cbq = paired_cbq()?;
 
         let fifo_dir = tempfile::tempdir()?;
-        let basepath = fifo_dir.path().join("pipe").to_str().unwrap().to_string();
+        let basepath = basepath(&fifo_dir);
         let r1_out = NamedTempFile::with_suffix(".fastq")?;
         let r1_path = r1_out.path().to_str().unwrap().to_string();
 
@@ -479,20 +449,10 @@ mod tests {
     /// written; R1 is silently skipped. This is valid — one-mate-only processing.
     #[test]
     fn test_pipe_exec_paired_r2_only() -> Result<()> {
-        let r1 = write_fastx().call()?;
-        let r2 = write_fastx().call()?;
-        let cbq = NamedTempFile::with_suffix(".cbq")?;
-        let encode_cmd = crate::cli::EncodeCommand::try_parse_from([
-            "encode",
-            r1.path().to_str().unwrap(),
-            r2.path().to_str().unwrap(),
-            "-o",
-            cbq.path().to_str().unwrap(),
-        ])?;
-        crate::commands::encode::run(&encode_cmd)?;
+        let cbq = paired_cbq()?;
 
         let fifo_dir = tempfile::tempdir()?;
-        let basepath = fifo_dir.path().join("pipe").to_str().unwrap().to_string();
+        let basepath = basepath(&fifo_dir);
         let r2_out = NamedTempFile::with_suffix(".fastq")?;
         let r2_path = r2_out.path().to_str().unwrap().to_string();
 
@@ -520,12 +480,10 @@ mod tests {
     /// still be unlinked from disk by the `FifoGuard`, not leaked.
     #[test]
     fn test_pipe_fifos_cleaned_up_on_error() -> Result<()> {
-        let fastq = write_fastx().call()?;
-        let cbq = NamedTempFile::with_suffix(".cbq")?;
-        encode(fastq.path(), cbq.path())?;
+        let cbq = single_cbq()?;
 
         let fifo_dir = tempfile::tempdir()?;
-        let basepath = fifo_dir.path().join("pipe").to_str().unwrap().to_string();
+        let basepath = basepath(&fifo_dir);
 
         // Drain the FIFO (so writer threads complete), then exit non-zero so
         // `run` bails after the FIFOs have been created.

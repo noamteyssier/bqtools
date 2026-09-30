@@ -1,9 +1,11 @@
-use anyhow::Result;
 use clap::Parser;
 
 use super::{InputBinseq, OutputFile};
 
-/// Subsample a BINSEQ file and output to FASTQ, FASTA, or TSV
+/// Subsample a BINSEQ file and output to FASTQ, FASTA, TSV, or BINSEQ
+///
+/// An `-o` ending in `.bq/.vbq/.cbq` writes a BINSEQ file in the input's mode
+/// and settings (the extension must match the input).
 ///
 /// Output defaults to TSV on stdout; use `-o reads.fastq[.gz]` or `-f q` for
 /// FASTQ. Record order in the output is not preserved.
@@ -26,7 +28,7 @@ pub struct SampleArgs {
     ///
     /// Each record is kept independently with this probability, so the output
     /// count is approximate. Applied within `--span` when given.
-    #[clap(short = 'F', long)]
+    #[clap(short = 'F', long, value_parser = parse_fraction)]
     pub fraction: f64,
 
     /// Seed for random sampling
@@ -35,11 +37,11 @@ pub struct SampleArgs {
     #[clap(short = 'S', long, default_value = "42")]
     pub seed: u64,
 }
-impl SampleArgs {
-    pub fn validate(&self) -> Result<()> {
-        if self.fraction <= 0.0 || self.fraction > 1.0 {
-            anyhow::bail!("Fraction must be between 0 and 1");
-        }
-        Ok(())
+
+fn parse_fraction(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(f) if f > 0.0 && f <= 1.0 => Ok(f),
+        Ok(_) => Err("Fraction must be between 0 and 1".into()),
+        Err(e) => Err(e.to_string()),
     }
 }

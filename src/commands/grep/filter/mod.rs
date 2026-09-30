@@ -1,129 +1,158 @@
-use hashbrown::HashSet;
-
-mod ac_matcher;
-#[cfg(feature = "fuzzy")]
-mod fuzzy_matcher;
 mod processor;
-mod regex_matcher;
 
-pub use ac_matcher::AhoCorasickMatcher;
-#[cfg(feature = "fuzzy")]
-pub use fuzzy_matcher::FuzzyMatcher;
 pub use processor::FilterProcessor;
-pub use regex_matcher::RegexMatcher;
-
-pub type MatchRanges = HashSet<(usize, usize)>;
-
-pub trait PatternMatch: Clone + Send + Sync {
-    fn match_primary(
-        &mut self,
-        sequence: &[u8],
-        matches: &mut MatchRanges,
-        and_logic: bool,
-    ) -> bool;
-    fn match_secondary(
-        &mut self,
-        sequence: &[u8],
-        matches: &mut MatchRanges,
-        and_logic: bool,
-    ) -> bool;
-    fn match_either(
-        &mut self,
-        primary: &[u8],
-        secondary: &[u8],
-        smatches: &mut MatchRanges,
-        xmatches: &mut MatchRanges,
-        and_logic: bool,
-    ) -> bool;
-
-    fn offset(&self) -> usize;
-}
-
-#[derive(Clone)]
-pub enum PatternMatcher {
-    Regex(RegexMatcher),
-    AhoCorasick(AhoCorasickMatcher),
-    #[cfg(feature = "fuzzy")]
-    Fuzzy(Box<FuzzyMatcher>),
-}
-impl PatternMatch for PatternMatcher {
-    fn match_primary(
-        &mut self,
-        sequence: &[u8],
-        matches: &mut MatchRanges,
-        and_logic: bool,
-    ) -> bool {
-        match self {
-            PatternMatcher::Regex(ref mut m) => m.match_primary(sequence, matches, and_logic),
-            PatternMatcher::AhoCorasick(ref mut m) => m.match_primary(sequence, matches, and_logic),
-            #[cfg(feature = "fuzzy")]
-            PatternMatcher::Fuzzy(ref mut m) => m.match_primary(sequence, matches, and_logic),
-        }
-    }
-
-    fn match_secondary(
-        &mut self,
-        sequence: &[u8],
-        matches: &mut MatchRanges,
-        and_logic: bool,
-    ) -> bool {
-        match self {
-            PatternMatcher::Regex(ref mut m) => m.match_secondary(sequence, matches, and_logic),
-            PatternMatcher::AhoCorasick(ref mut m) => {
-                m.match_secondary(sequence, matches, and_logic)
-            }
-            #[cfg(feature = "fuzzy")]
-            PatternMatcher::Fuzzy(ref mut m) => m.match_secondary(sequence, matches, and_logic),
-        }
-    }
-
-    fn match_either(
-        &mut self,
-        primary: &[u8],
-        secondary: &[u8],
-        smatches: &mut MatchRanges,
-        xmatches: &mut MatchRanges,
-        and_logic: bool,
-    ) -> bool {
-        match self {
-            PatternMatcher::Regex(ref mut m) => {
-                m.match_either(primary, secondary, smatches, xmatches, and_logic)
-            }
-            PatternMatcher::AhoCorasick(ref mut m) => {
-                m.match_either(primary, secondary, smatches, xmatches, and_logic)
-            }
-            #[cfg(feature = "fuzzy")]
-            PatternMatcher::Fuzzy(ref mut m) => {
-                m.match_either(primary, secondary, smatches, xmatches, and_logic)
-            }
-        }
-    }
-
-    fn offset(&self) -> usize {
-        match self {
-            PatternMatcher::Regex(ref m) => m.offset(),
-            PatternMatcher::AhoCorasick(ref m) => m.offset(),
-            #[cfg(feature = "fuzzy")]
-            PatternMatcher::Fuzzy(ref m) => m.offset(),
-        }
-    }
-}
 
 #[cfg(test)]
 #[allow(clippy::similar_names)]
 mod matcher_unit_tests {
-    use super::{HashSet, PatternMatch, RegexMatcher};
+    use anyhow::Result;
+    use fixedbitset::FixedBitSet;
+
+    use crate::commands::grep::{Engine, Pattern, PatternCollection, PatternSets, Spans};
+
+    type MatchRanges = Vec<(usize, usize)>;
+
+    fn collection<'a>(patterns: impl IntoIterator<Item = &'a [u8]>) -> PatternCollection {
+        PatternCollection(
+            patterns
+                .into_iter()
+                .map(|p| Pattern {
+                    name: None,
+                    sequence: p.to_vec(),
+                })
+                .collect(),
+        )
+    }
+
+    /// Whether a pattern set is satisfied: an empty set always is, otherwise
+    /// every (AND) or any (OR) of its patterns must hit.
+    fn satisfied(bits: &FixedBitSet, and_logic: bool) -> bool {
+        bits.is_empty()
+            || if and_logic {
+                bits.count_ones(..) == bits.len()
+            } else {
+                !bits.is_clear()
+            }
+    }
+
+    /// Matches each pattern set on its own, over the engine, and reports hit
+    /// positions shifted by `offset` as a sliced `--range` would.
+    struct Matcher {
+        primary: Engine,
+        secondary: Engine,
+        either: Engine,
+        offset: usize,
+    }
+    impl Matcher {
+        fn new(
+            [pat1, pat2, pat]: [PatternCollection; 3],
+            offset: usize,
+            make: impl Fn(&PatternSets) -> Result<Engine>,
+        ) -> Result<Self> {
+            let only = |pat1, pat2, pat| make(&PatternSets { pat1, pat2, pat });
+            let empty = || PatternCollection::default();
+            Ok(Self {
+                primary: only(pat1, empty(), empty())?,
+                secondary: only(empty(), pat2, empty())?,
+                either: only(empty(), empty(), pat)?,
+                offset,
+            })
+        }
+
+        fn offset(&self) -> usize {
+            self.offset
+        }
+
+        fn match_primary(
+            &mut self,
+            sequence: &[u8],
+            matches: &mut MatchRanges,
+            and_logic: bool,
+        ) -> bool {
+            let mut bits = self.primary.bitset();
+            let mut spans = Spans::default();
+            self.primary.hit(sequence, b"", &mut bits, Some(&mut spans));
+            spans.shift(self.offset);
+            matches.extend(spans.primary);
+            satisfied(&bits, and_logic)
+        }
+
+        fn match_secondary(
+            &mut self,
+            sequence: &[u8],
+            matches: &mut MatchRanges,
+            and_logic: bool,
+        ) -> bool {
+            if sequence.is_empty() {
+                return true;
+            }
+            let mut bits = self.secondary.bitset();
+            let mut spans = Spans::default();
+            self.secondary
+                .hit(b"", sequence, &mut bits, Some(&mut spans));
+            spans.shift(self.offset);
+            matches.extend(spans.secondary);
+            satisfied(&bits, and_logic)
+        }
+
+        fn match_either(
+            &mut self,
+            primary: &[u8],
+            secondary: &[u8],
+            smatches: &mut MatchRanges,
+            xmatches: &mut MatchRanges,
+            and_logic: bool,
+        ) -> bool {
+            let mut bits = self.either.bitset();
+            let mut spans = Spans::default();
+            self.either
+                .hit(primary, secondary, &mut bits, Some(&mut spans));
+            spans.shift(self.offset);
+            smatches.extend(spans.primary);
+            xmatches.extend(spans.secondary);
+            satisfied(&bits, and_logic)
+        }
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn regex_matcher(
+        re1: Vec<regex::bytes::Regex>,
+        re2: Vec<regex::bytes::Regex>,
+        re: Vec<regex::bytes::Regex>,
+        offset: usize,
+    ) -> Matcher {
+        let sources =
+            |res: &[regex::bytes::Regex]| collection(res.iter().map(|r| r.as_str().as_bytes()));
+        Matcher::new(
+            [sources(&re1), sources(&re2), sources(&re)],
+            offset,
+            Engine::regex,
+        )
+        .unwrap()
+    }
 
     #[cfg(feature = "fuzzy")]
-    use super::FuzzyMatcher;
+    #[allow(clippy::ptr_arg)]
+    fn fuzzy_matcher(
+        pat1: &Vec<Vec<u8>>,
+        pat2: &Vec<Vec<u8>>,
+        pat: &Vec<Vec<u8>>,
+        k: usize,
+        inexact: bool,
+        offset: usize,
+        max_n_frac: Option<f32>,
+    ) -> Result<Matcher> {
+        let sets = [pat1, pat2, pat].map(|p| collection(p.iter().map(Vec::as_slice)));
+        Matcher::new(sets, offset, |s| Engine::fuzzy(s, k, inexact, max_n_frac))
+    }
 
     #[test]
     fn test_regex_matcher_primary() {
         let re1 = vec![regex::bytes::Regex::new("AAAA").unwrap()];
-        let mut matcher = RegexMatcher::new(re1, vec![], vec![], 0);
+        let mut matcher = regex_matcher(re1, vec![], vec![], 0);
 
         let sequence = b"GGGGAAAATTTT";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         let result = matcher.match_primary(sequence, &mut matches, true);
 
@@ -134,10 +163,10 @@ mod matcher_unit_tests {
     #[test]
     fn test_regex_matcher_secondary() {
         let re2 = vec![regex::bytes::Regex::new("TTTT").unwrap()];
-        let mut matcher = RegexMatcher::new(vec![], re2, vec![], 0);
+        let mut matcher = regex_matcher(vec![], re2, vec![], 0);
 
         let sequence = b"GGGGAAAATTTT";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         let result = matcher.match_secondary(sequence, &mut matches, true);
 
@@ -148,12 +177,12 @@ mod matcher_unit_tests {
     #[test]
     fn test_regex_matcher_either() {
         let re = vec![regex::bytes::Regex::new("CCCC").unwrap()];
-        let mut matcher = RegexMatcher::new(vec![], vec![], re, 0);
+        let mut matcher = regex_matcher(vec![], vec![], re, 0);
 
         let primary = b"GGGGAAAATTTT";
         let secondary = b"GGGGCCCCTTTT";
-        let mut smatches = HashSet::new();
-        let mut xmatches = HashSet::new();
+        let mut smatches = MatchRanges::new();
+        let mut xmatches = MatchRanges::new();
 
         let result = matcher.match_either(primary, secondary, &mut smatches, &mut xmatches, true);
 
@@ -168,16 +197,16 @@ mod matcher_unit_tests {
             regex::bytes::Regex::new("AAAA").unwrap(),
             regex::bytes::Regex::new("TTTT").unwrap(),
         ];
-        let mut matcher = RegexMatcher::new(re1, vec![], vec![], 0);
+        let mut matcher = regex_matcher(re1, vec![], vec![], 0);
 
         // Sequence with both patterns
         let seq_both = b"GGGGAAAATTTT";
-        let mut matches1 = HashSet::new();
+        let mut matches1 = MatchRanges::new();
         assert!(matcher.match_primary(seq_both, &mut matches1, true));
 
         // Sequence with only one pattern
         let seq_one = b"GGGGAAAACCCC";
-        let mut matches2 = HashSet::new();
+        let mut matches2 = MatchRanges::new();
         assert!(!matcher.match_primary(seq_one, &mut matches2, true));
     }
 
@@ -187,21 +216,21 @@ mod matcher_unit_tests {
             regex::bytes::Regex::new("AAAA").unwrap(),
             regex::bytes::Regex::new("TTTT").unwrap(),
         ];
-        let mut matcher = RegexMatcher::new(re1, vec![], vec![], 0);
+        let mut matcher = regex_matcher(re1, vec![], vec![], 0);
 
         // Sequence with only one pattern
         let seq = b"GGGGAAAACCCC";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
         assert!(matcher.match_primary(seq, &mut matches, false));
     }
 
     #[test]
     fn test_regex_matcher_no_match() {
         let re1 = vec![regex::bytes::Regex::new("AAAA").unwrap()];
-        let mut matcher = RegexMatcher::new(re1, vec![], vec![], 0);
+        let mut matcher = regex_matcher(re1, vec![], vec![], 0);
 
         let sequence = b"GGGGCCCCTTTT";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         let result = matcher.match_primary(sequence, &mut matches, true);
 
@@ -212,10 +241,10 @@ mod matcher_unit_tests {
     #[test]
     fn test_regex_matcher_multiple_matches() {
         let re1 = vec![regex::bytes::Regex::new("AA").unwrap()];
-        let mut matcher = RegexMatcher::new(re1, vec![], vec![], 0);
+        let mut matcher = regex_matcher(re1, vec![], vec![], 0);
 
         let sequence = b"AAGGAAGGAA";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         let result = matcher.match_primary(sequence, &mut matches, true);
 
@@ -227,22 +256,22 @@ mod matcher_unit_tests {
     fn test_regex_matcher_anchors() {
         // Start anchor
         let re_start = vec![regex::bytes::Regex::new("^AAAA").unwrap()];
-        let mut matcher_start = RegexMatcher::new(re_start, vec![], vec![], 0);
+        let mut matcher_start = regex_matcher(re_start, vec![], vec![], 0);
 
         let seq_match = b"AAAATTTT";
         let seq_no_match = b"GGGGAAAA";
-        let mut matches1 = HashSet::new();
-        let mut matches2 = HashSet::new();
+        let mut matches1 = MatchRanges::new();
+        let mut matches2 = MatchRanges::new();
 
         assert!(matcher_start.match_primary(seq_match, &mut matches1, true));
         assert!(!matcher_start.match_primary(seq_no_match, &mut matches2, true));
 
         // End anchor
         let re_end = vec![regex::bytes::Regex::new("TTTT$").unwrap()];
-        let mut matcher_end = RegexMatcher::new(re_end, vec![], vec![], 0);
+        let mut matcher_end = regex_matcher(re_end, vec![], vec![], 0);
 
-        let mut matches3 = HashSet::new();
-        let mut matches4 = HashSet::new();
+        let mut matches3 = MatchRanges::new();
+        let mut matches4 = MatchRanges::new();
 
         assert!(matcher_end.match_primary(b"AAAATTTT", &mut matches3, true));
         assert!(!matcher_end.match_primary(b"TTTTGGGG", &mut matches4, true));
@@ -251,12 +280,12 @@ mod matcher_unit_tests {
     #[test]
     fn test_regex_matcher_character_classes() {
         let re1 = vec![regex::bytes::Regex::new("A[TC]G").unwrap()];
-        let mut matcher = RegexMatcher::new(re1, vec![], vec![], 0);
+        let mut matcher = regex_matcher(re1, vec![], vec![], 0);
 
         let seq1 = b"GGGGATGTTTTT";
         let seq2 = b"GGGGACGTTTTT";
-        let mut matches1 = HashSet::new();
-        let mut matches2 = HashSet::new();
+        let mut matches1 = MatchRanges::new();
+        let mut matches2 = MatchRanges::new();
 
         assert!(matcher.match_primary(seq1, &mut matches1, true));
         assert!(matcher.match_primary(seq2, &mut matches2, true));
@@ -265,12 +294,12 @@ mod matcher_unit_tests {
     #[test]
     fn test_regex_matcher_repetition() {
         let re1 = vec![regex::bytes::Regex::new("A{3,5}").unwrap()];
-        let mut matcher = RegexMatcher::new(re1, vec![], vec![], 0);
+        let mut matcher = regex_matcher(re1, vec![], vec![], 0);
 
         let seq_match = b"GGGGAAAATTTT";
         let seq_no_match = b"GGGGAATTTT";
-        let mut matches1 = HashSet::new();
-        let mut matches2 = HashSet::new();
+        let mut matches1 = MatchRanges::new();
+        let mut matches2 = MatchRanges::new();
 
         assert!(matcher.match_primary(seq_match, &mut matches1, true));
         assert!(!matcher.match_primary(seq_no_match, &mut matches2, true));
@@ -279,14 +308,14 @@ mod matcher_unit_tests {
     #[test]
     fn test_regex_matcher_alternation() {
         let re1 = vec![regex::bytes::Regex::new("(AA|TT){2}").unwrap()];
-        let mut matcher = RegexMatcher::new(re1, vec![], vec![], 0);
+        let mut matcher = regex_matcher(re1, vec![], vec![], 0);
 
         let seq1 = b"GGGGAAAATTTT";
         let seq2 = b"GGGGTTTTCCCC";
         let seq3 = b"GGGGAATTCCCC";
-        let mut matches1 = HashSet::new();
-        let mut matches2 = HashSet::new();
-        let mut matches3 = HashSet::new();
+        let mut matches1 = MatchRanges::new();
+        let mut matches2 = MatchRanges::new();
+        let mut matches3 = MatchRanges::new();
 
         assert!(matcher.match_primary(seq1, &mut matches1, true));
         assert!(matcher.match_primary(seq2, &mut matches2, true));
@@ -295,10 +324,10 @@ mod matcher_unit_tests {
 
     #[test]
     fn test_regex_matcher_empty_patterns() {
-        let mut matcher = RegexMatcher::new(vec![], vec![], vec![], 0);
+        let mut matcher = regex_matcher(vec![], vec![], vec![], 0);
 
         let sequence = b"GGGGAAAATTTT";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         // Empty patterns should return true (match everything)
         assert!(matcher.match_primary(sequence, &mut matches, true));
@@ -308,10 +337,10 @@ mod matcher_unit_tests {
     #[test]
     fn test_regex_matcher_empty_sequence() {
         let re2 = vec![regex::bytes::Regex::new("AAAA").unwrap()];
-        let mut matcher = RegexMatcher::new(vec![], re2, vec![], 0);
+        let mut matcher = regex_matcher(vec![], re2, vec![], 0);
 
         let empty_seq = b"";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         // Empty secondary sequence should return true (no requirement)
         assert!(matcher.match_secondary(empty_seq, &mut matches, true));
@@ -321,21 +350,21 @@ mod matcher_unit_tests {
     #[test]
     fn test_fuzzy_matcher_basic() {
         let pat1 = vec![b"AAAAAAAA".to_vec()];
-        let mut matcher = FuzzyMatcher::new(&pat1, &vec![], &vec![], 1, false, 0, None).unwrap();
+        let mut matcher = fuzzy_matcher(&pat1, &vec![], &vec![], 1, false, 0, None).unwrap();
 
         // Exact match
         let seq_exact = b"GGGGAAAAAAAATTTT";
-        let mut matches1 = HashSet::new();
+        let mut matches1 = MatchRanges::new();
         assert!(matcher.match_primary(seq_exact, &mut matches1, true));
 
         // One mismatch (within edit distance)
         let seq_mismatch = b"GGGGAAAAACAATTTT";
-        let mut matches2 = HashSet::new();
+        let mut matches2 = MatchRanges::new();
         assert!(matcher.match_primary(seq_mismatch, &mut matches2, true));
 
         // Too many mismatches
         let seq_far = b"GGGGAAAACCAATTTT";
-        let mut matches3 = HashSet::new();
+        let mut matches3 = MatchRanges::new();
         let result = matcher.match_primary(seq_far, &mut matches3, true);
         assert!(!result, "Unexpected match, >1 edit distance");
     }
@@ -347,18 +376,18 @@ mod matcher_unit_tests {
 
         // Test with k=0 (exact match only)
         let mut matcher_k0 =
-            FuzzyMatcher::new(&pat1.clone(), &vec![], &vec![], 0, false, 0, None).unwrap();
+            fuzzy_matcher(&pat1.clone(), &vec![], &vec![], 0, false, 0, None).unwrap();
         let seq_exact = b"GGGGAAAAAAAATTTT";
         let seq_mismatch = b"GGGGAAAAACAATTTT";
-        let mut matches1 = HashSet::new();
-        let mut matches2 = HashSet::new();
+        let mut matches1 = MatchRanges::new();
+        let mut matches2 = MatchRanges::new();
 
         assert!(matcher_k0.match_primary(seq_exact, &mut matches1, true));
         assert!(!matcher_k0.match_primary(seq_mismatch, &mut matches2, true));
 
         // Test with k=2 (up to 2 edits)
-        let mut matcher_k2 = FuzzyMatcher::new(&pat1, &vec![], &vec![], 2, false, 0, None).unwrap();
-        let mut matches3 = HashSet::new();
+        let mut matcher_k2 = fuzzy_matcher(&pat1, &vec![], &vec![], 2, false, 0, None).unwrap();
+        let mut matches3 = MatchRanges::new();
 
         assert!(matcher_k2.match_primary(seq_mismatch, &mut matches3, true));
     }
@@ -367,16 +396,16 @@ mod matcher_unit_tests {
     #[test]
     fn test_fuzzy_matcher_inexact_only() {
         let pat1 = vec![b"AAAAAAAA".to_vec()];
-        let mut matcher = FuzzyMatcher::new(&pat1, &vec![], &vec![], 2, true, 0, None).unwrap();
+        let mut matcher = fuzzy_matcher(&pat1, &vec![], &vec![], 2, true, 0, None).unwrap();
 
         // Exact match should not be reported with inexact_only
         let seq_exact = b"GGGGAAAAAAAATTTT";
-        let mut matches1 = HashSet::new();
+        let mut matches1 = MatchRanges::new();
         assert!(!matcher.match_primary(seq_exact, &mut matches1, true));
 
         // Inexact match should be reported
         let seq_inexact = b"GGGGAAAAACAATTTT";
-        let mut matches2 = HashSet::new();
+        let mut matches2 = MatchRanges::new();
         assert!(matcher.match_primary(seq_inexact, &mut matches2, true));
     }
 
@@ -387,10 +416,10 @@ mod matcher_unit_tests {
     #[test]
     fn test_fuzzy_matcher_default_max_n_frac_rejects_all_n_match() {
         let pat1 = vec![b"ACGTACGTACGT".to_vec()];
-        let mut matcher = FuzzyMatcher::new(&pat1, &vec![], &vec![], 1, false, 0, None).unwrap();
+        let mut matcher = fuzzy_matcher(&pat1, &vec![], &vec![], 1, false, 0, None).unwrap();
 
         let all_n = b"NNNNNNNNNNNNNNNNNN";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
         assert!(
             !matcher.match_primary(all_n, &mut matches, true),
             "default max_n_frac (k/pattern_len) should reject an all-N match"
@@ -401,11 +430,10 @@ mod matcher_unit_tests {
     #[test]
     fn test_fuzzy_matcher_max_n_frac_override_allows_all_n_match() {
         let pat1 = vec![b"ACGTACGTACGT".to_vec()];
-        let mut matcher =
-            FuzzyMatcher::new(&pat1, &vec![], &vec![], 1, false, 0, Some(1.0)).unwrap();
+        let mut matcher = fuzzy_matcher(&pat1, &vec![], &vec![], 1, false, 0, Some(1.0)).unwrap();
 
         let all_n = b"NNNNNNNNNNNNNNNNNN";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
         assert!(
             matcher.match_primary(all_n, &mut matches, true),
             "max_n_frac=1.0 should disable the N-fraction filter"
@@ -416,14 +444,13 @@ mod matcher_unit_tests {
     #[test]
     fn test_fuzzy_matcher_max_n_frac_explicit_zero_rejects_any_n() {
         let pat1 = vec![b"AAAAAAAA".to_vec()];
-        let mut matcher =
-            FuzzyMatcher::new(&pat1, &vec![], &vec![], 1, false, 0, Some(0.0)).unwrap();
+        let mut matcher = fuzzy_matcher(&pat1, &vec![], &vec![], 1, false, 0, Some(0.0)).unwrap();
 
         // A single N substituted for an A is within edit distance 1, and would
         // pass the default k/pattern_len threshold (1/8), but max_n_frac=0.0
         // should reject any match containing an N.
         let seq_with_n = b"GGGGAAAAAAANTTTT";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
         assert!(
             !matcher.match_primary(seq_with_n, &mut matches, true),
             "max_n_frac=0.0 should reject a match containing any N"
@@ -431,7 +458,7 @@ mod matcher_unit_tests {
 
         // A match with no N's at all should still be found.
         let seq_no_n = b"GGGGAAAAAAAATTTT";
-        let mut matches_clean = HashSet::new();
+        let mut matches_clean = MatchRanges::new();
         assert!(matcher.match_primary(seq_no_n, &mut matches_clean, true));
     }
 
@@ -442,7 +469,7 @@ mod matcher_unit_tests {
     #[test]
     fn test_fuzzy_matcher_rejects_mismatched_pattern_lengths_primary() {
         let pat1 = vec![b"AAAA".to_vec(), b"AAAAA".to_vec()];
-        let result = FuzzyMatcher::new(&pat1, &vec![], &vec![], 1, false, 0, None);
+        let result = fuzzy_matcher(&pat1, &vec![], &vec![], 1, false, 0, None);
         assert!(
             result.is_err(),
             "mismatched primary pattern lengths should error, not panic"
@@ -453,7 +480,7 @@ mod matcher_unit_tests {
     #[test]
     fn test_fuzzy_matcher_rejects_mismatched_pattern_lengths_secondary() {
         let pat2 = vec![b"AAAA".to_vec(), b"AAAAA".to_vec()];
-        let result = FuzzyMatcher::new(&vec![], &pat2, &vec![], 1, false, 0, None);
+        let result = fuzzy_matcher(&vec![], &pat2, &vec![], 1, false, 0, None);
         assert!(
             result.is_err(),
             "mismatched secondary pattern lengths should error, not panic"
@@ -464,7 +491,7 @@ mod matcher_unit_tests {
     #[test]
     fn test_fuzzy_matcher_rejects_mismatched_pattern_lengths_either() {
         let pat = vec![b"AAAA".to_vec(), b"AAAAA".to_vec()];
-        let result = FuzzyMatcher::new(&vec![], &vec![], &pat, 1, false, 0, None);
+        let result = fuzzy_matcher(&vec![], &vec![], &pat, 1, false, 0, None);
         assert!(
             result.is_err(),
             "mismatched either-set pattern lengths should error, not panic"
@@ -475,7 +502,7 @@ mod matcher_unit_tests {
     #[test]
     fn test_fuzzy_matcher_accepts_uniform_pattern_lengths() {
         let pat1 = vec![b"AAAA".to_vec(), b"TTTT".to_vec(), b"CCCC".to_vec()];
-        let result = FuzzyMatcher::new(&pat1, &vec![], &vec![], 1, false, 0, None);
+        let result = fuzzy_matcher(&pat1, &vec![], &vec![], 1, false, 0, None);
         assert!(result.is_ok(), "uniform pattern lengths should not error");
     }
 
@@ -483,10 +510,10 @@ mod matcher_unit_tests {
     #[test]
     fn test_fuzzy_matcher_secondary() {
         let pat2 = vec![b"TTTTTTTT".to_vec()];
-        let mut matcher = FuzzyMatcher::new(&vec![], &pat2, &vec![], 1, false, 0, None).unwrap();
+        let mut matcher = fuzzy_matcher(&vec![], &pat2, &vec![], 1, false, 0, None).unwrap();
 
         let sequence = b"GGGGTTTTTTTTCCCC";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         assert!(matcher.match_secondary(sequence, &mut matches, true));
     }
@@ -495,12 +522,12 @@ mod matcher_unit_tests {
     #[test]
     fn test_fuzzy_matcher_either() {
         let pat = vec![b"CCCCCCCC".to_vec()];
-        let mut matcher = FuzzyMatcher::new(&vec![], &vec![], &pat, 1, false, 0, None).unwrap();
+        let mut matcher = fuzzy_matcher(&vec![], &vec![], &pat, 1, false, 0, None).unwrap();
 
         let primary = b"GGGGAAAATTTT";
         let secondary = b"GGGGCCCCCCCCTTTT";
-        let mut smatches = HashSet::new();
-        let mut xmatches = HashSet::new();
+        let mut smatches = MatchRanges::new();
+        let mut xmatches = MatchRanges::new();
 
         let result = matcher.match_either(primary, secondary, &mut smatches, &mut xmatches, true);
 
@@ -513,16 +540,16 @@ mod matcher_unit_tests {
     #[test]
     fn test_fuzzy_matcher_and_logic() {
         let pat1 = vec![b"AAAAAAAA".to_vec(), b"TTTTTTTT".to_vec()];
-        let mut matcher = FuzzyMatcher::new(&pat1, &vec![], &vec![], 1, false, 0, None).unwrap();
+        let mut matcher = fuzzy_matcher(&pat1, &vec![], &vec![], 1, false, 0, None).unwrap();
 
         // Sequence with both patterns
         let seq_both = b"AAAAAAAATTTTTTTT";
-        let mut matches1 = HashSet::new();
+        let mut matches1 = MatchRanges::new();
         assert!(matcher.match_primary(seq_both, &mut matches1, true));
 
         // Sequence with only one pattern
         let seq_one = b"AAAAAAAACCCCCCCC";
-        let mut matches2 = HashSet::new();
+        let mut matches2 = MatchRanges::new();
         assert!(!matcher.match_primary(seq_one, &mut matches2, true));
     }
 
@@ -530,21 +557,21 @@ mod matcher_unit_tests {
     #[test]
     fn test_fuzzy_matcher_or_logic() {
         let pat1 = vec![b"AAAAAAAA".to_vec(), b"TTTTTTTT".to_vec()];
-        let mut matcher = FuzzyMatcher::new(&pat1, &vec![], &vec![], 1, false, 0, None).unwrap();
+        let mut matcher = fuzzy_matcher(&pat1, &vec![], &vec![], 1, false, 0, None).unwrap();
 
         // Sequence with only one pattern
         let seq = b"AAAAAAAACCCCCCCC";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
         assert!(matcher.match_primary(seq, &mut matches, false));
     }
 
     #[cfg(feature = "fuzzy")]
     #[test]
     fn test_fuzzy_matcher_empty_patterns() {
-        let mut matcher = FuzzyMatcher::new(&vec![], &vec![], &vec![], 1, false, 0, None).unwrap();
+        let mut matcher = fuzzy_matcher(&vec![], &vec![], &vec![], 1, false, 0, None).unwrap();
 
         let sequence = b"GGGGAAAATTTT";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         // Empty patterns should return true
         assert!(matcher.match_primary(sequence, &mut matches, true));
@@ -554,15 +581,15 @@ mod matcher_unit_tests {
     #[test]
     fn test_match_location_tracking() {
         let re1 = vec![regex::bytes::Regex::new("AA").unwrap()];
-        let mut matcher = RegexMatcher::new(re1, vec![], vec![], 0);
+        let mut matcher = regex_matcher(re1, vec![], vec![], 0);
 
         let sequence = b"GGGAAATTTAAACCC";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         matcher.match_primary(sequence, &mut matches, true);
 
         // Verify we have match locations
-        assert!(!matches.is_empty());
+        assert_ne!(matches.len(), 0);
 
         // Verify match locations are valid intervals
         for (start, end) in &matches {
@@ -577,10 +604,10 @@ mod matcher_unit_tests {
     #[test]
     fn test_regex_matcher_offset_zero() {
         let re1 = vec![regex::bytes::Regex::new("AA").unwrap()];
-        let mut matcher = RegexMatcher::new(re1, vec![], vec![], 0);
+        let mut matcher = regex_matcher(re1, vec![], vec![], 0);
 
         let sequence = b"GGGGAATTTT";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         matcher.match_primary(sequence, &mut matches, true);
 
@@ -596,10 +623,10 @@ mod matcher_unit_tests {
     fn test_regex_matcher_offset_nonzero() {
         let offset = 10;
         let re1 = vec![regex::bytes::Regex::new("AA").unwrap()];
-        let mut matcher = RegexMatcher::new(re1, vec![], vec![], offset);
+        let mut matcher = regex_matcher(re1, vec![], vec![], offset);
 
         let sequence = b"GGGGAATTTT";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         matcher.match_primary(sequence, &mut matches, true);
 
@@ -621,10 +648,10 @@ mod matcher_unit_tests {
     fn test_regex_matcher_offset_multiple_matches() {
         let offset = 5;
         let re1 = vec![regex::bytes::Regex::new("A").unwrap()];
-        let mut matcher = RegexMatcher::new(re1, vec![], vec![], offset);
+        let mut matcher = regex_matcher(re1, vec![], vec![], offset);
 
         let sequence = b"GAAATTAAGG";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         matcher.match_primary(sequence, &mut matches, true);
 
@@ -647,10 +674,10 @@ mod matcher_unit_tests {
     fn test_regex_matcher_offset_secondary() {
         let offset = 7;
         let re2 = vec![regex::bytes::Regex::new("TT").unwrap()];
-        let mut matcher = RegexMatcher::new(vec![], re2, vec![], offset);
+        let mut matcher = regex_matcher(vec![], re2, vec![], offset);
 
         let sequence = b"AAAATTGGTT";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         matcher.match_secondary(sequence, &mut matches, true);
 
@@ -670,12 +697,12 @@ mod matcher_unit_tests {
     fn test_regex_matcher_offset_either() {
         let offset = 3;
         let re = vec![regex::bytes::Regex::new("CC").unwrap()];
-        let mut matcher = RegexMatcher::new(vec![], vec![], re, offset);
+        let mut matcher = regex_matcher(vec![], vec![], re, offset);
 
         let primary = b"GGGGAAAATTTT";
         let secondary = b"GGGGCCCCTTTT";
-        let mut smatches = HashSet::new();
-        let mut xmatches = HashSet::new();
+        let mut smatches = MatchRanges::new();
+        let mut xmatches = MatchRanges::new();
 
         matcher.match_either(primary, secondary, &mut smatches, &mut xmatches, true);
 
@@ -706,10 +733,10 @@ mod matcher_unit_tests {
     #[test]
     fn test_fuzzy_matcher_offset_zero() {
         let pat1 = vec![b"AAAA".to_vec()];
-        let mut matcher = FuzzyMatcher::new(&pat1, &vec![], &vec![], 0, false, 0, None).unwrap();
+        let mut matcher = fuzzy_matcher(&pat1, &vec![], &vec![], 0, false, 0, None).unwrap();
 
         let sequence = b"GGGGAAAAATTTT";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         matcher.match_primary(sequence, &mut matches, true);
 
@@ -726,10 +753,10 @@ mod matcher_unit_tests {
         let offset = 15;
         let pat1 = vec![b"AAAA".to_vec()];
         let mut matcher =
-            FuzzyMatcher::new(&pat1.clone(), &vec![], &vec![], 1, false, offset, None).unwrap();
+            fuzzy_matcher(&pat1.clone(), &vec![], &vec![], 1, false, offset, None).unwrap();
 
         let sequence = b"GGGGAAAAATTTT";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         matcher.match_primary(sequence, &mut matches, true);
 
@@ -738,10 +765,10 @@ mod matcher_unit_tests {
 
         // Create a matcher with offset=0 to get the baseline positions
         let mut baseline_matcher =
-            FuzzyMatcher::new(&pat1.clone(), &vec![], &vec![], 1, false, 0, None).unwrap();
-        let mut baseline_matches = HashSet::new();
+            fuzzy_matcher(&pat1.clone(), &vec![], &vec![], 1, false, 0, None).unwrap();
+        let mut baseline_matches = MatchRanges::new();
         baseline_matcher.match_primary(sequence, &mut baseline_matches, true);
-        let baseline_match = baseline_matches.iter().next().unwrap();
+        let baseline_match = baseline_matches.first().unwrap();
 
         // With offset, all matches should be shifted by the offset amount
         for (start, end) in &matches {
@@ -772,12 +799,11 @@ mod matcher_unit_tests {
     fn test_fuzzy_matcher_offset_with_mismatch() {
         let offset = 8;
         let pat1 = vec![b"AAAA".to_vec()];
-        let mut matcher =
-            FuzzyMatcher::new(&pat1, &vec![], &vec![], 1, false, offset, None).unwrap();
+        let mut matcher = fuzzy_matcher(&pat1, &vec![], &vec![], 1, false, offset, None).unwrap();
 
         // One mismatch in the pattern
         let sequence = b"GGGGAACAATTTT";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         matcher.match_primary(sequence, &mut matches, true);
 
@@ -796,11 +822,10 @@ mod matcher_unit_tests {
     fn test_fuzzy_matcher_offset_secondary() {
         let offset = 12;
         let pat2 = vec![b"TTTT".to_vec()];
-        let mut matcher =
-            FuzzyMatcher::new(&vec![], &pat2, &vec![], 1, false, offset, None).unwrap();
+        let mut matcher = fuzzy_matcher(&vec![], &pat2, &vec![], 1, false, offset, None).unwrap();
 
         let sequence = b"GGGGTTTTCCCC";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         matcher.match_secondary(sequence, &mut matches, true);
 
@@ -818,16 +843,16 @@ mod matcher_unit_tests {
         let re2 = vec![regex::bytes::Regex::new("TT").unwrap()];
         let re = vec![regex::bytes::Regex::new("GG").unwrap()];
 
-        let mut matcher = RegexMatcher::new(re1, re2, re, offset);
+        let mut matcher = regex_matcher(re1, re2, re, offset);
 
         // Test that offset is consistent across all methods
         assert_eq!(matcher.offset(), offset, "Offset should be consistent");
 
         let sequence = b"AATTGGCCAAGG";
-        let mut matches1 = HashSet::new();
-        let mut matches2 = HashSet::new();
-        let mut smatches = HashSet::new();
-        let mut xmatches = HashSet::new();
+        let mut matches1 = MatchRanges::new();
+        let mut matches2 = MatchRanges::new();
+        let mut smatches = MatchRanges::new();
+        let mut xmatches = MatchRanges::new();
 
         matcher.match_primary(sequence, &mut matches1, false);
         matcher.match_secondary(sequence, &mut matches2, false);
@@ -835,7 +860,8 @@ mod matcher_unit_tests {
 
         // All matches should have positions adjusted by the same offset
         let all_matches = matches1
-            .union(&matches2)
+            .iter()
+            .chain(matches2.iter())
             .chain(smatches.iter())
             .chain(xmatches.iter())
             .collect::<Vec<_>>();
@@ -853,10 +879,10 @@ mod matcher_unit_tests {
     fn test_large_offset_edge_case() {
         let offset = 1000;
         let re1 = vec![regex::bytes::Regex::new("A").unwrap()];
-        let mut matcher = RegexMatcher::new(re1, vec![], vec![], offset);
+        let mut matcher = regex_matcher(re1, vec![], vec![], offset);
 
         let sequence = b"AAAA";
-        let mut matches = HashSet::new();
+        let mut matches = MatchRanges::new();
 
         matcher.match_primary(sequence, &mut matches, false);
 
@@ -881,20 +907,20 @@ mod matcher_unit_tests {
         let re2 = vec![regex::bytes::Regex::new("TTTT").unwrap()];
         let re = vec![regex::bytes::Regex::new("CCCC").unwrap()];
 
-        let mut matcher = RegexMatcher::new(re1, re2, re, 0);
+        let mut matcher = regex_matcher(re1, re2, re, 0);
 
         let primary = b"AAAAGGGGCCCCGGGG";
         let secondary = b"GGGGTTTTGGGGCCCC";
 
-        let mut sm = HashSet::new();
-        let mut xm = HashSet::new();
+        let mut sm = MatchRanges::new();
+        let mut xm = MatchRanges::new();
 
         // All patterns should match
         assert!(matcher.match_primary(primary, &mut sm, true));
         assert!(matcher.match_secondary(secondary, &mut xm, true));
 
-        let mut sm2 = HashSet::new();
-        let mut xm2 = HashSet::new();
+        let mut sm2 = MatchRanges::new();
+        let mut xm2 = MatchRanges::new();
         assert!(matcher.match_either(primary, secondary, &mut sm2, &mut xm2, true));
     }
 }

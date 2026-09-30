@@ -1,17 +1,8 @@
-#![allow(clippy::module_inception)]
-
-mod cli;
-mod commands;
-mod types;
-
-#[cfg(test)]
-mod testutils;
-
-use cli::{Cli, Commands};
+use bqtools::cli::{Cli, Commands};
+use bqtools::commands;
 
 use anyhow::Result;
 use clap::Parser;
-use log::trace;
 
 #[cfg(unix)]
 fn reset_sigpipe() {
@@ -41,7 +32,6 @@ fn main() -> Result<()> {
 
     let args = Cli::parse();
 
-    trace!("init");
     match args.command {
         Commands::Encode(ref encode) => commands::encode::run(encode),
         Commands::Decode(ref decode) => commands::decode::run(decode),
@@ -55,6 +45,5 @@ fn main() -> Result<()> {
         Commands::Revcomp(ref revcomp) => commands::revcomp::run(revcomp),
         Commands::Verify(ref verify) => commands::verify::run(verify),
     }?;
-    trace!("done");
     Ok(())
 }

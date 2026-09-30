@@ -1,13 +1,18 @@
-use std::{io::stdout, sync::Arc};
+use std::{
+    io::stdout,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
+};
 
 use anyhow::Result;
 use binseq::{BinseqRecord, ParallelProcessor};
-use parking_lot::Mutex;
 use serde::Serialize;
 
 use crate::commands::grep::SimpleRange;
 
-use super::PatternCount;
+use super::PatternCounter;
 
 #[derive(Serialize)]
 pub struct PatternCountResult<'a> {
@@ -33,36 +38,29 @@ impl<'a> PatternCountResult<'a> {
 }
 
 #[derive(Clone)]
-pub struct PatternCountProcessor<Pc: PatternCount> {
-    counter: Pc,
-    range: Option<SimpleRange>,
+pub struct PatternCountProcessor {
+    counter: PatternCounter,
+    range: SimpleRange,
     header: bool,
-    pattern_names: Vec<String>,
 
     local_pattern_count: Vec<usize>,
     local_total: usize, // total number of reads processed (not just matches)
 
     /// Global values
-    global_pattern_count: Arc<Vec<Mutex<usize>>>,
-    global_total: Arc<Mutex<usize>>, // total number of reads processed
+    global_pattern_count: Arc<Mutex<Vec<usize>>>,
+    global_total: Arc<AtomicUsize>, // total number of reads processed
 }
-impl<Pc: PatternCount> PatternCountProcessor<Pc> {
-    pub fn new(
-        counter: Pc,
-        range: Option<SimpleRange>,
-        header: bool,
-        pattern_names: Vec<String>,
-    ) -> Self {
+impl PatternCountProcessor {
+    pub fn new(counter: PatternCounter, range: SimpleRange, header: bool) -> Self {
         let num_patterns = counter.num_patterns();
         Self {
             counter,
             range,
             header,
-            pattern_names,
             local_pattern_count: vec![0; num_patterns],
             local_total: 0,
-            global_pattern_count: Arc::new((0..num_patterns).map(|_| Mutex::new(0)).collect()),
-            global_total: Arc::new(Mutex::new(0)),
+            global_pattern_count: Arc::new(Mutex::new(vec![0; num_patterns])),
+            global_total: Arc::new(AtomicUsize::new(0)),
         }
     }
     pub fn pprint_pattern_counts(&self) -> Result<()> {
@@ -71,36 +69,24 @@ impl<Pc: PatternCount> PatternCountProcessor<Pc> {
             .has_headers(true)
             .from_writer(stdout());
 
-        let total_records = *self.global_total.lock();
-        let patterns = self.counter.pattern_strings();
-
-        patterns
-            .iter()
-            .enumerate()
-            .zip(self.global_pattern_count.iter())
-            .try_for_each(|((idx, _pattern), count)| -> Result<()> {
-                let name = &self.pattern_names[idx];
-                let record = PatternCountResult::new(name, *count.lock(), total_records);
-                writer.serialize(record)?;
-                Ok(())
-            })?;
-
+        let total_records = self.global_total.load(Ordering::Relaxed);
+        let counts = self.global_pattern_count.lock().unwrap();
+        for (name, count) in self.counter.pattern_names().iter().zip(counts.iter()) {
+            writer.serialize(PatternCountResult::new(name, *count, total_records))?;
+        }
         writer.flush()?;
         Ok(())
     }
 }
-impl<Pc: PatternCount> ParallelProcessor for PatternCountProcessor<Pc> {
+impl ParallelProcessor for PatternCountProcessor {
     fn process_record<B: BinseqRecord>(&mut self, record: B) -> binseq::Result<()> {
         let (primary, extended) = if self.header {
             (record.sheader(), record.xheader())
         } else {
-            let sbuf = record.sseq();
-            let xbuf = record.xseq();
-            if let Some(range) = self.range {
-                (range.slice(sbuf), range.slice(xbuf))
-            } else {
-                (sbuf, xbuf)
-            }
+            (
+                self.range.slice(record.sseq()),
+                self.range.slice(record.xseq()),
+            )
         };
 
         self.counter
@@ -111,19 +97,14 @@ impl<Pc: PatternCount> ParallelProcessor for PatternCountProcessor<Pc> {
 
     fn on_batch_complete(&mut self) -> binseq::Result<()> {
         // update the local and global pattern counts
-        self.local_pattern_count
-            .iter_mut()
-            .zip(self.global_pattern_count.iter())
-            .for_each(|(local, global)| {
-                *global.lock() += *local;
-                *local = 0;
-            });
+        let mut global = self.global_pattern_count.lock().unwrap();
+        for (local, global) in self.local_pattern_count.iter_mut().zip(global.iter_mut()) {
+            *global += std::mem::take(local);
+        }
 
         // update the local and global total records processed
-        {
-            *self.global_total.lock() += self.local_total;
-            self.local_total = 0;
-        }
+        self.global_total
+            .fetch_add(std::mem::take(&mut self.local_total), Ordering::Relaxed);
 
         Ok(())
     }

@@ -1,157 +1,77 @@
-use std::sync::Arc;
-
-use crate::cli::{FileFormat, Mate, SampleCommand};
+use crate::cli::{BinseqMode, OutputBinseqInherited, SampleCommand};
 use anyhow::Result;
-use binseq::prelude::*;
-use parking_lot::Mutex;
-use rand::{RngExt, SeedableRng};
+use binseq::{BinseqReader, BinseqRecord};
+use std::io::Write;
 
-use super::decode::{build_writer, write_record_pair, SplitWriter};
+use super::{
+    decode::{keep, run_with},
+    encode::processor::Encoder,
+    utils::builder_from_reader,
+};
 
-#[derive(Clone)]
-struct SampleProcessor {
-    /// Sampling Options
+/// Encoder that only keeps the sampled records.
+struct Sampler<W: Write + Send> {
+    inner: Encoder<W>,
     fraction: f64,
     seed: u64,
-
-    /// Local write buffers
-    mixed: Vec<u8>, // General purpose, interleaved or singlets
-    left: Vec<u8>, // Used when writing pairs of files (R1/R2)
-    right: Vec<u8>,
-
-    /// Quality buffers
-    squal: Vec<u8>,
-    xqual: Vec<u8>,
-
-    /// Write Options
-    format: FileFormat,
-    mate: Option<Mate>,
-    is_split: bool,
-
-    /// Global values
-    global_writer: Arc<Mutex<SplitWriter>>,
 }
-impl SampleProcessor {
-    pub fn new(
-        fraction: f64,
-        seed: u64,
-        writer: SplitWriter,
-        format: FileFormat,
-        mate: Option<Mate>,
-    ) -> Self {
+impl<W: Write + Send> Clone for Sampler<W> {
+    fn clone(&self) -> Self {
         Self {
-            fraction,
-            format,
-            mate,
-            seed,
-            mixed: Vec::new(),
-            left: Vec::new(),
-            right: Vec::new(),
-            squal: Vec::new(),
-            xqual: Vec::new(),
-            is_split: writer.is_split(),
-            global_writer: Arc::new(Mutex::new(writer)),
+            inner: self.inner.clone(),
+            fraction: self.fraction,
+            seed: self.seed,
         }
-    }
-    /// Keep/drop is a pure function of `(seed, record index)`, so the sample is
-    /// reproducible regardless of thread count or batch boundaries.
-    pub fn include_record(&self, index: u64) -> bool {
-        rand::rngs::SmallRng::seed_from_u64(self.seed.wrapping_add(index))
-            .random_bool(self.fraction)
     }
 }
-impl ParallelProcessor for SampleProcessor {
-    fn process_record<B: BinseqRecord>(&mut self, record: B) -> binseq::Result<()> {
-        let sbuf = record.sseq();
-        let xbuf = record.xseq();
-
-        if self.include_record(record.index()) {
-            let squal = if record.has_quality() {
-                record.squal()
-            } else {
-                if self.squal.len() < sbuf.len() {
-                    self.squal.resize(sbuf.len(), b'?');
-                }
-                &self.squal
-            };
-
-            let xqual = if record.is_paired() {
-                if record.has_quality() {
-                    record.xqual()
-                } else {
-                    if self.xqual.len() < xbuf.len() {
-                        self.xqual.resize(xbuf.len(), b'?');
-                    }
-                    &self.xqual
-                }
-            } else {
-                if self.xqual.len() < xbuf.len() {
-                    self.xqual.resize(xbuf.len(), b'?');
-                }
-                &self.xqual
-            };
-
-            write_record_pair(
-                &mut self.left,
-                &mut self.right,
-                &mut self.mixed,
-                self.mate,
-                self.is_split,
-                sbuf,
-                squal,
-                record.sheader(),
-                xbuf,
-                xqual,
-                record.xheader(),
-                self.format,
-            )?;
+impl<W: Write + Send> binseq::ParallelProcessor for Sampler<W> {
+    fn process_record<R: BinseqRecord>(&mut self, record: R) -> binseq::Result<()> {
+        if keep(record.index(), self.fraction, self.seed) {
+            self.inner.process_record(record)?;
         }
-
         Ok(())
     }
-
     fn on_batch_complete(&mut self) -> binseq::Result<()> {
-        // Lock the mutex to write to the global buffer
-        {
-            let mut writer = self.global_writer.lock();
-            if writer.is_split() {
-                writer.write_split(&self.left, true)?;
-                writer.write_split(&self.right, false)?;
-            } else {
-                writer.write_interleaved(&self.mixed)?;
-            }
-            writer.flush()?;
-        }
-
-        // Clear the local buffer and reset the local record count
-        self.mixed.clear();
-        self.left.clear();
-        self.right.clear();
-        Ok(())
+        self.inner.on_batch_complete()
     }
+    fn on_thread_complete(&mut self) -> binseq::Result<()> {
+        self.inner.on_thread_complete()
+    }
+}
+
+fn run_binseq(args: &SampleCommand) -> Result<()> {
+    let reader = BinseqReader::new(args.input.path())?;
+    let out = OutputBinseqInherited {
+        output: args.output.output.clone(),
+        pipe: false,
+        threads: args.output.threads,
+    };
+    let writer = builder_from_reader(&reader).build(out.as_writer(args.input.mode()?)?)?;
+    let mut proc = Sampler {
+        inner: Encoder::new(writer)?,
+        fraction: args.sample.fraction,
+        seed: args.sample.seed,
+    };
+    let range = args.input.range(reader.num_records()?)?;
+    reader.process_parallel_range(proc.clone(), out.threads(), range)?;
+    proc.inner.finish()?;
+    Ok(())
 }
 
 pub fn run(args: &SampleCommand) -> Result<()> {
-    args.sample.validate()?;
-    let reader = BinseqReader::new(args.input.path())?;
-    let writer = build_writer(&args.output, reader.is_paired())?;
-    let format = args.output.format()?;
-    let mate = if reader.is_paired() {
-        Some(args.output.mate())
-    } else {
-        None
-    };
-    let proc = SampleProcessor::new(args.sample.fraction, args.sample.seed, writer, format, mate);
-    if let Some(mut span) = args.input.span {
-        let num_records = reader.num_records()?;
-        reader.process_parallel_range(
-            proc.clone(),
-            args.output.threads(),
-            span.get_range(num_records)?,
-        )?;
-    } else {
-        reader.process_parallel(proc.clone(), args.output.threads())?;
+    if args
+        .output
+        .output
+        .as_deref()
+        .is_some_and(|p| BinseqMode::determine(p).is_ok())
+    {
+        return run_binseq(args);
     }
+    run_with(
+        &args.input,
+        &args.output,
+        Some((args.sample.fraction, args.sample.seed)),
+    )?;
     Ok(())
 }
 
@@ -163,23 +83,14 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use crate::cli::{BinseqMode, FileFormat};
-    use crate::testutils::{count_fastx_records, write_fastx};
-
-    fn encode(in_path: &std::path::Path, out_path: &std::path::Path) -> Result<()> {
-        let cmd = crate::cli::EncodeCommand::try_parse_from([
-            "encode",
-            in_path.to_str().unwrap(),
-            "-o",
-            out_path.to_str().unwrap(),
-        ])?;
-        crate::commands::encode::run(&cmd)
-    }
+    use crate::testutils::{count_fastx_records, encode, write_fastx};
 
     fn sample(
         bq_path: &std::path::Path,
         out_path: &std::path::Path,
         fraction: f64,
         seed: u64,
+        threads: u32,
     ) -> Result<()> {
         let cmd = crate::cli::SampleCommand::try_parse_from([
             "sample",
@@ -188,6 +99,8 @@ mod tests {
             &fraction.to_string(),
             "-S",
             &seed.to_string(),
+            "-T",
+            &threads.to_string(),
             "-o",
             out_path.to_str().unwrap(),
         ])?;
@@ -209,7 +122,7 @@ mod tests {
             encode(in_tmp.path(), bq_tmp.path())?;
 
             let out_tmp = NamedTempFile::with_suffix(fmt.fastx_suffix())?;
-            sample(bq_tmp.path(), out_tmp.path(), fraction, 42)?;
+            sample(bq_tmp.path(), out_tmp.path(), fraction, 42, 1)?;
 
             let count = count_fastx_records(out_tmp.path())?;
             assert!(
@@ -230,13 +143,32 @@ mod tests {
             encode(in_tmp.path(), bq_tmp.path())?;
 
             let out_tmp = NamedTempFile::with_suffix(".fastq")?;
-            sample(bq_tmp.path(), out_tmp.path(), 1.0, 42)?;
+            sample(bq_tmp.path(), out_tmp.path(), 1.0, 42, 1)?;
 
             assert_eq!(
                 count_fastx_records(out_tmp.path())?,
                 nrec,
                 "sample fraction=1.0 should return all records for {mode:?}"
             );
+        }
+        Ok(())
+    }
+
+    /// `-o x.<mode>` writes a BINSEQ file with the sampled records.
+    #[test]
+    fn test_sample_binseq_output() -> Result<()> {
+        for mode in BinseqMode::enum_iter() {
+            let in_tmp = write_fastx().nrec(200).call()?;
+            let bq_tmp = NamedTempFile::with_suffix(mode.extension())?;
+            encode(in_tmp.path(), bq_tmp.path())?;
+
+            let out_tmp = NamedTempFile::with_suffix(mode.extension())?;
+            sample(bq_tmp.path(), out_tmp.path(), 1.0, 42, 1)?;
+            assert_eq!(crate::testutils::count_binseq(out_tmp.path())?, 200);
+
+            sample(bq_tmp.path(), out_tmp.path(), 0.5, 42, 1)?;
+            let n = crate::testutils::count_binseq(out_tmp.path())?;
+            assert!(n > 50 && n < 150, "{n} {mode:?}");
         }
         Ok(())
     }
@@ -261,21 +193,9 @@ mod tests {
         encode(in_tmp.path(), bq_tmp.path())?;
 
         let mut results = Vec::new();
-        for threads in ["1", "4"] {
+        for threads in [1, 4] {
             let out_tmp = NamedTempFile::with_suffix(".fastq")?;
-            let cmd = crate::cli::SampleCommand::try_parse_from([
-                "sample",
-                bq_tmp.path().to_str().unwrap(),
-                "-F",
-                "0.3",
-                "-S",
-                "7",
-                "-T",
-                threads,
-                "-o",
-                out_tmp.path().to_str().unwrap(),
-            ])?;
-            super::run(&cmd)?;
+            sample(bq_tmp.path(), out_tmp.path(), 0.3, 7, threads)?;
             results.push(sorted_seqs(out_tmp.path())?);
         }
         assert_eq!(results[0], results[1]);
@@ -294,7 +214,7 @@ mod tests {
             .iter()
             .map(|&seed| {
                 let out_tmp = NamedTempFile::with_suffix(".fastq")?;
-                sample(bq_tmp.path(), out_tmp.path(), 0.5, seed)?;
+                sample(bq_tmp.path(), out_tmp.path(), 0.5, seed, 1)?;
                 count_fastx_records(out_tmp.path())
             })
             .collect::<Result<_>>()?;

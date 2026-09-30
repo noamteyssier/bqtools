@@ -1,31 +1,14 @@
 mod processor;
 
 use anyhow::Result;
-use binseq::{bq, cbq, vbq, BinseqReader, BinseqWriterBuilder, ParallelReader};
+use binseq::BinseqReader;
 use log::{info, warn};
 
-use crate::cli::{BinseqMode, Mate, RevcompCommand};
+use crate::{
+    cli::{Mate, RevcompCommand},
+    commands::utils::builder_from_reader,
+};
 use processor::RevCompProcessor;
-
-/// Builds a writer that mirrors the input file's own header/configuration,
-/// since reverse complementing changes sequence content but not schema.
-fn get_builder(args: &RevcompCommand) -> Result<BinseqWriterBuilder> {
-    let builder = match args.input.mode()? {
-        BinseqMode::Bq => {
-            let reader = bq::MmapReader::new(args.input.path())?;
-            BinseqWriterBuilder::from_bq_header(reader.header())
-        }
-        BinseqMode::Vbq => {
-            let reader = vbq::MmapReader::new(args.input.path())?;
-            BinseqWriterBuilder::from_vbq_header(reader.header())
-        }
-        BinseqMode::Cbq => {
-            let reader = cbq::MmapReader::new(args.input.path())?;
-            BinseqWriterBuilder::from_cbq_header(reader.header())
-        }
-    };
-    Ok(builder)
-}
 
 pub fn run(args: &RevcompCommand) -> Result<()> {
     let reader = BinseqReader::new(args.input.path())?;
@@ -36,21 +19,13 @@ pub fn run(args: &RevcompCommand) -> Result<()> {
         args.mate
     };
 
-    let builder = get_builder(args)?;
+    let range = args.input.range(reader.num_records()?)?;
+    let builder = builder_from_reader(&reader);
     let ohandle = args.output.as_writer(args.input.mode()?)?;
     let writer = builder.build(ohandle)?;
     let mut processor = RevCompProcessor::new(writer, mate)?;
 
-    if let Some(mut span) = args.input.span {
-        let num_records = reader.num_records()?;
-        reader.process_parallel_range(
-            processor.clone(),
-            args.output.threads(),
-            span.get_range(num_records)?,
-        )?;
-    } else {
-        reader.process_parallel(processor.clone(), args.output.threads())?;
-    }
+    reader.process_parallel_range(processor.clone(), args.output.threads(), range)?;
     processor.finish()?;
 
     info!(
@@ -109,19 +84,6 @@ mod tests {
         super::run(&cmd)
     }
 
-    fn reverse_complement_str(seq: &str) -> String {
-        seq.chars()
-            .rev()
-            .map(|c| match c {
-                'A' => 'T',
-                'C' => 'G',
-                'G' => 'C',
-                'T' => 'A',
-                other => other,
-            })
-            .collect()
-    }
-
     /// Extracts just the sequence lines from a FASTA file, sorted, so
     /// comparisons are insensitive to reordering from parallel processing.
     fn sorted_sequences(path: &std::path::Path) -> Result<Vec<String>> {
@@ -170,40 +132,21 @@ mod tests {
     }
 
     /// Reverse complementing a known sequence should produce the expected result.
+    /// On single-end files `-M` is ignored, so `-M 2` must behave the same.
     #[test]
     fn test_revcomp_known_sequence() -> Result<()> {
         let seq = "ACGTACGTGATTACAACGTACGT";
-        let in_tmp = NamedTempFile::with_suffix(".fastq")?;
-        {
-            use std::io::Write as _;
-            let mut f = std::fs::File::create(in_tmp.path())?;
-            writeln!(f, "@read1")?;
-            writeln!(f, "{seq}")?;
-            writeln!(f, "+")?;
-            writeln!(f, "{}", "I".repeat(seq.len()))?;
-        }
-        let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
-        encode(in_tmp.path(), bq_tmp.path())?;
-
-        let rc_tmp = NamedTempFile::with_suffix(".cbq")?;
-        revcomp(bq_tmp.path(), rc_tmp.path(), &[])?;
-
-        let out_fa = NamedTempFile::with_suffix(".fasta")?;
-        decode_to_fasta(rc_tmp.path(), out_fa.path())?;
-
-        let content = std::fs::read_to_string(out_fa.path())?;
-        assert!(
-            content.contains(&reverse_complement_str(seq)),
-            "expected reverse complement of {seq} in output: {content}"
-        );
-
-        Ok(())
-    }
-
-    /// On single-end files `-M` is ignored: `-M 2` used to leave the read untouched.
-    #[test]
-    fn test_revcomp_single_end_ignores_mate() -> Result<()> {
-        let seq = "ACGTACGTGATTACAACGTACGT";
+        let expected: String = seq
+            .chars()
+            .rev()
+            .map(|c| match c {
+                'A' => 'T',
+                'C' => 'G',
+                'G' => 'C',
+                'T' => 'A',
+                other => other,
+            })
+            .collect();
         let in_tmp = NamedTempFile::with_suffix(".fastq")?;
         std::fs::write(
             in_tmp.path(),
@@ -212,13 +155,18 @@ mod tests {
         let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
         encode(in_tmp.path(), bq_tmp.path())?;
 
-        let rc_tmp = NamedTempFile::with_suffix(".cbq")?;
-        revcomp(bq_tmp.path(), rc_tmp.path(), &["-M", "2"])?;
+        for extra in [&[][..], &["-M", "2"][..]] {
+            let rc_tmp = NamedTempFile::with_suffix(".cbq")?;
+            revcomp(bq_tmp.path(), rc_tmp.path(), extra)?;
 
-        let out_fa = NamedTempFile::with_suffix(".fasta")?;
-        decode_to_fasta(rc_tmp.path(), out_fa.path())?;
-        let content = std::fs::read_to_string(out_fa.path())?;
-        assert!(content.contains(&reverse_complement_str(seq)));
+            let out_fa = NamedTempFile::with_suffix(".fasta")?;
+            decode_to_fasta(rc_tmp.path(), out_fa.path())?;
+            let content = std::fs::read_to_string(out_fa.path())?;
+            assert!(
+                content.contains(&expected),
+                "expected {expected} in output for args {extra:?}: {content}"
+            );
+        }
         Ok(())
     }
 
@@ -247,6 +195,18 @@ mod tests {
                 "revcomp single-mate record count wrong for {mode:?} mate={mate_flag}"
             );
         }
+        Ok(())
+    }
+
+    /// An out-of-range `--span` must fail before the output file is created.
+    #[test]
+    fn test_revcomp_bad_span_leaves_no_output() -> Result<()> {
+        let in_tmp = write_fastx().call()?;
+        let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
+        encode(in_tmp.path(), bq_tmp.path())?;
+        let out = tempfile::tempdir()?.keep().join("out.cbq");
+        assert!(revcomp(bq_tmp.path(), &out, &["--span", "99999.."]).is_err());
+        assert!(!out.exists(), "output created despite invalid span");
         Ok(())
     }
 }

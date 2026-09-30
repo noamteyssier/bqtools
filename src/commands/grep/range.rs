@@ -1,28 +1,22 @@
 use std::{fmt::Display, str::FromStr};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct SimpleRange {
     start: Option<usize>,
     end: Option<usize>,
 }
 impl SimpleRange {
     pub fn validate(&self) -> Result<(), &'static str> {
-        if let Some(start) = self.start {
-            if let Some(end) = self.end {
-                if start > end {
-                    return Err("Start must be less than or equal to end");
-                }
+        match (self.start, self.end) {
+            (Some(start), Some(end)) if start > end => {
+                Err("Start must be less than or equal to end")
             }
+            _ => Ok(()),
         }
-        Ok(())
     }
     pub fn slice<'a>(&self, buf: &'a [u8]) -> &'a [u8] {
-        match (self.start, self.end) {
-            (None, None) => buf,
-            (None, Some(end)) => &buf[..end.min(buf.len())],
-            (Some(start), None) => &buf[start.min(buf.len())..],
-            (Some(start), Some(end)) => &buf[start.min(buf.len())..end.min(buf.len())],
-        }
+        let n = buf.len();
+        &buf[self.start.unwrap_or(0).min(n)..self.end.unwrap_or(n).min(n)]
     }
     pub fn offset(&self) -> usize {
         self.start.unwrap_or(0)
@@ -42,31 +36,18 @@ impl FromStr for SimpleRange {
     type Err = &'static str;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let range = if s.is_empty() || s == ".." {
-            Self {
-                start: None,
-                end: None,
-            }
-        } else if let Some(rest) = s.strip_prefix("..") {
-            let end = rest.parse().map_err(|_| "Invalid range")?;
-            Self {
-                start: None,
-                end: Some(end),
-            }
-        } else if let Some(rest) = s.strip_suffix("..") {
-            let start = rest.parse().map_err(|_| "Invalid range")?;
-            Self {
-                start: Some(start),
-                end: None,
-            }
+        let (start, end) = if s.is_empty() {
+            ("", "")
         } else {
-            let (start_str, end_str) = s.split_once("..").ok_or("Invalid range")?;
-            let start = start_str.parse().map_err(|_| "Invalid range")?;
-            let end = end_str.parse().map_err(|_| "Invalid range")?;
-            Self {
-                start: Some(start),
-                end: Some(end),
-            }
+            s.split_once("..").ok_or("Invalid range")?
+        };
+        let bound = |x: &str| match x {
+            "" => Ok(None),
+            x => x.parse().map(Some).map_err(|_| "Invalid range"),
+        };
+        let range = Self {
+            start: bound(start)?,
+            end: bound(end)?,
         };
         range.validate()?;
         Ok(range)

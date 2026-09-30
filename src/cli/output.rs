@@ -51,26 +51,19 @@ impl OutputFile {
     }
 
     /// Explicit `-c` wins; otherwise compression is inferred from the output extension.
-    #[allow(clippy::case_sensitive_file_extension_comparisons)]
     pub fn compress(&self) -> CompressionType {
-        if let Some(compress) = self.compress {
-            return compress;
-        }
-        self.output
-            .as_ref()
-            .map_or(CompressionType::Uncompressed, |path| {
-                if path.ends_with(".gz") {
-                    CompressionType::Gzip
-                } else if path.ends_with(".zst") {
-                    CompressionType::Zstd
-                } else {
-                    CompressionType::Uncompressed
-                }
-            })
-    }
-
-    pub fn mate(&self) -> Mate {
-        self.mate
+        self.compress.unwrap_or_else(|| {
+            match self
+                .output
+                .as_deref()
+                .map(Path::new)
+                .and_then(Path::extension)
+            {
+                Some(ext) if ext == "gz" => CompressionType::Gzip,
+                Some(ext) if ext == "zst" => CompressionType::Zstd,
+                _ => CompressionType::Uncompressed,
+            }
+        })
     }
 
     pub fn format(&self) -> Result<FileFormat> {
@@ -117,13 +110,12 @@ impl OutputFile {
             }
         };
 
-        // Open the output files
-        let r1 = match_output(Some(name("R1")))?;
-        let r2 = match_output(Some(name("R2")))?;
-
-        // Compress the output files (if necessary)
-        let r1 = compress_passthrough(r1, compress, self.threads())?;
-        let r2 = compress_passthrough(r2, compress, self.threads())?;
+        // Open (and compress, if necessary) the output files
+        let open = |mate: &str| -> Result<Box<dyn Write + Send>> {
+            compress_passthrough(match_output(Some(name(mate)))?, compress, self.threads())
+        };
+        let r1 = open("R1")?;
+        let r2 = open("R2")?;
 
         Ok((r1, r2))
     }
@@ -144,9 +136,10 @@ pub enum Mate {
 
 /// 0 means all CPUs; any other value is capped at the CPU count.
 pub fn clamp_threads(n: usize) -> usize {
+    let cpus = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     match n {
-        0 => num_cpus::get(),
-        n => n.min(num_cpus::get()),
+        0 => cpus,
+        n => n.min(cpus),
     }
 }
 
@@ -300,11 +293,7 @@ pub struct OutputBinseqOptions {
 }
 impl OutputBinseqOptions {
     pub fn headers(&self) -> bool {
-        if self.archive {
-            true
-        } else {
-            !self.skip_headers
-        }
+        self.archive || !self.skip_headers
     }
 
     pub fn block_size(&self) -> usize {
@@ -316,19 +305,11 @@ impl OutputBinseqOptions {
     }
 
     pub fn compress(&self) -> bool {
-        if self.archive {
-            true
-        } else {
-            !self.uncompressed
-        }
+        self.archive || !self.uncompressed
     }
 
     pub fn quality(&self) -> bool {
-        if self.archive {
-            true
-        } else {
-            !self.skip_quality
-        }
+        self.archive || !self.skip_quality
     }
 
     pub fn threads(&self) -> usize {
@@ -336,14 +317,11 @@ impl OutputBinseqOptions {
     }
 
     pub fn bitsize(&self) -> BitSize {
-        if self.archive {
+        // `parse_bitsize` restricts the value to 2 or 4
+        if self.archive || self.bitsize == 4 {
             BitSize::Four
         } else {
-            // `parse_bitsize` restricts the value to 2 or 4
-            match self.bitsize {
-                4 => BitSize::Four,
-                _ => BitSize::Two,
-            }
+            BitSize::Two
         }
     }
 }
@@ -452,9 +430,9 @@ fn parse_memory_size(input: &str) -> Result<usize, String> {
     let last_char = input.chars().last().unwrap_or('0');
 
     let (number_str, multiplier) = match last_char {
-        'K' | 'k' => (&input[..input.len() - 1], 1024),
-        'M' | 'm' => (&input[..input.len() - 1], 1024 * 1024),
-        'G' | 'g' => (&input[..input.len() - 1], 1024 * 1024 * 1024),
+        'K' => (&input[..input.len() - 1], 1024),
+        'M' => (&input[..input.len() - 1], 1024 * 1024),
+        'G' => (&input[..input.len() - 1], 1024 * 1024 * 1024),
         _ if last_char.is_ascii_digit() => (input.as_str(), 1),
         _ => return Err(format!("Invalid memory size format: {input}")),
     };

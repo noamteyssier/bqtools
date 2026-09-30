@@ -1,11 +1,12 @@
 mod processor;
 
 use anyhow::{bail, Result};
-use binseq::{BinseqReader, ParallelReader};
+use binseq::BinseqReader;
+use clap::ValueEnum;
 use log::warn;
 use serde::Serialize;
 
-use crate::cli::{Mate, VerifyCommand, VerifyOptions};
+use crate::cli::{InputBinseq, Mate, VerifyCommand, VerifyOptions};
 use processor::{FieldMask, VerifyProcessor};
 
 /// Whether `reader`'s underlying file actually stores per-record headers.
@@ -41,83 +42,70 @@ fn field_mask(opts: &VerifyOptions) -> Result<FieldMask> {
     Ok(fields)
 }
 
-fn mate_label(mate: Mate) -> &'static str {
-    match mate {
-        Mate::One => "1",
-        Mate::Two => "2",
-        Mate::Both => "both",
-    }
-}
-
-fn field_labels(fields: FieldMask) -> Vec<&'static str> {
-    let mut labels = Vec::new();
-    if fields.seq {
-        labels.push("seq");
-    }
-    if fields.qual {
-        labels.push("qual");
-    }
-    if fields.headers {
-        labels.push("headers");
-    }
-    if fields.flags {
-        labels.push("flags");
-    }
-    labels
-}
-
-struct VerifyResult {
-    fields: FieldMask,
-    checksum: u64,
-    num_records: usize,
+fn field_labels(f: FieldMask) -> Vec<&'static str> {
+    [
+        ("seq", f.seq),
+        ("qual", f.qual),
+        ("headers", f.headers),
+        ("flags", f.flags),
+    ]
+    .into_iter()
+    .filter(|&(_, on)| on)
+    .map(|(name, _)| name)
+    .collect()
 }
 
 /// Runs the checksum computation without printing, so it can be reused by tests.
-fn compute(args: &VerifyCommand) -> Result<VerifyResult> {
+fn compute(args: &VerifyCommand, path: &str) -> Result<VerifyReport> {
     let mut fields = field_mask(&args.opts)?;
 
-    let reader = BinseqReader::new(args.input.path())?;
+    let input = InputBinseq {
+        input: path.to_string(),
+        span: args.span,
+    };
+    let reader = BinseqReader::new(path)?;
     if args.opts.mate == Mate::Two && !reader.is_paired() {
         bail!(
-            "`--mate/-M 2` was requested but `{}` is single-channel (no extended/mate-2 \
-             sequence); the checksum would be computed over no fields",
-            args.input.path()
+            "`--mate/-M 2` was requested but `{path}` is single-channel (no extended/mate-2 \
+             sequence); the checksum would be computed over no fields"
         );
     }
 
+    let (stored_qual, stored_flags) = match &reader {
+        BinseqReader::Bq(_) => (false, false),
+        BinseqReader::Vbq(r) => (r.header().qual, r.header().flags),
+        BinseqReader::Cbq(r) => (r.header().has_qualities(), r.header().has_flags()),
+    };
     if fields.headers && !reader_has_headers(&reader) {
-        fields.headers = false;
-        if fields.seq || fields.qual || fields.flags {
-            warn!(
-                "`{}` has no header data; excluding headers from the checksum",
-                args.input.path()
-            );
-        } else {
-            bail!(
-                "`{}` has no header data, and seq/qual/flags were all skipped; the checksum \
-                 would be computed over no fields",
-                args.input.path()
-            );
-        }
+        warn!("`{path}` has no header data; excluding headers from the checksum");
+    }
+    fields.headers &= reader_has_headers(&reader);
+    fields.qual &= stored_qual;
+    fields.flags &= stored_flags;
+    if !(fields.seq || fields.qual || fields.headers || fields.flags) {
+        bail!(
+            "`{path}` stores none of the selected fields; the checksum would be computed over no fields"
+        );
     }
 
     let processor = VerifyProcessor::new(fields, args.opts.mate);
 
-    if let Some(mut span) = args.input.span {
-        let num_records = reader.num_records()?;
-        reader.process_parallel_range(
-            processor.clone(),
-            args.opts.threads,
-            span.get_range(num_records)?,
-        )?;
-    } else {
-        reader.process_parallel(processor.clone(), args.opts.threads)?;
-    }
+    let range = input.range(reader.num_records()?)?;
+    reader.process_parallel_range(processor.clone(), args.opts.threads, range)?;
 
-    Ok(VerifyResult {
-        fields,
-        checksum: processor.checksum(),
+    Ok(VerifyReport {
+        path: path.to_string(),
+        algorithm: "xxh3-64/wrapping-sum",
+        fields: field_labels(fields),
+        mate: args
+            .opts
+            .mate
+            .to_possible_value()
+            .unwrap()
+            .get_name()
+            .to_string(),
         num_records: processor.num_records(),
+        checksum: format!("{:016x}", processor.checksum()),
     })
 }
 
@@ -126,31 +114,28 @@ struct VerifyReport {
     path: String,
     algorithm: &'static str,
     fields: Vec<&'static str>,
-    mate: &'static str,
+    mate: String,
     num_records: usize,
     checksum: String,
 }
 
 pub fn run(args: &VerifyCommand) -> Result<()> {
-    let result = compute(args)?;
+    let reports = args
+        .input
+        .iter()
+        .map(|path| compute(args, path))
+        .collect::<Result<Vec<_>>>()?;
 
     if args.opts.json {
-        let report = VerifyReport {
-            path: args.input.path().to_string(),
-            algorithm: "xxh3-64/wrapping-sum",
-            fields: field_labels(result.fields),
-            mate: mate_label(args.opts.mate),
-            num_records: result.num_records,
-            checksum: format!("{:016x}", result.checksum),
-        };
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        // a single input keeps the original object shape
+        match reports.as_slice() {
+            [one] => println!("{}", serde_json::to_string_pretty(one)?),
+            _ => println!("{}", serde_json::to_string_pretty(&reports)?),
+        }
     } else {
-        println!(
-            "{:016x}\t{}\t{}",
-            result.checksum,
-            result.num_records,
-            args.input.path()
-        );
+        for r in &reports {
+            println!("{}\t{}\t{}", r.checksum, r.num_records, r.path);
+        }
     }
 
     Ok(())
@@ -166,24 +151,17 @@ mod tests {
     use crate::cli::BinseqMode;
     use crate::testutils::write_fastx;
 
-    fn encode(in_path: &std::path::Path, out_path: &std::path::Path) -> Result<()> {
-        let cmd = crate::cli::EncodeCommand::try_parse_from([
-            "encode",
-            in_path.to_str().unwrap(),
-            "-o",
-            out_path.to_str().unwrap(),
-        ])?;
-        crate::commands::encode::run(&cmd)
-    }
-
-    fn encode_without_headers(in_path: &std::path::Path, out_path: &std::path::Path) -> Result<()> {
-        let cmd = crate::cli::EncodeCommand::try_parse_from([
-            "encode",
-            in_path.to_str().unwrap(),
-            "-o",
-            out_path.to_str().unwrap(),
-            "--skip-headers",
-        ])?;
+    fn encode(in_path: &std::path::Path, out_path: &std::path::Path, extra: &[&str]) -> Result<()> {
+        let cmd = crate::cli::EncodeCommand::try_parse_from(
+            [
+                "encode",
+                in_path.to_str().unwrap(),
+                "-o",
+                out_path.to_str().unwrap(),
+            ]
+            .into_iter()
+            .chain(extra.iter().copied()),
+        )?;
         crate::commands::encode::run(&cmd)
     }
 
@@ -191,7 +169,10 @@ mod tests {
         let mut cmd_args = vec!["verify".to_string(), path.to_str().unwrap().to_string()];
         cmd_args.extend(extra.iter().map(std::string::ToString::to_string));
         let cmd = crate::cli::VerifyCommand::try_parse_from(cmd_args)?;
-        Ok(super::compute(&cmd)?.checksum)
+        Ok(u64::from_str_radix(
+            &super::compute(&cmd, path.to_str().unwrap())?.checksum,
+            16,
+        )?)
     }
 
     /// Re-encoding the same input twice (independent parallel runs, so record
@@ -203,9 +184,9 @@ mod tests {
             let in_tmp = write_fastx().call()?;
 
             let bq_a = NamedTempFile::with_suffix(mode.extension())?;
-            encode(in_tmp.path(), bq_a.path())?;
+            encode(in_tmp.path(), bq_a.path(), &[])?;
             let bq_b = NamedTempFile::with_suffix(mode.extension())?;
-            encode(in_tmp.path(), bq_b.path())?;
+            encode(in_tmp.path(), bq_b.path(), &[])?;
 
             let checksum_a = checksum(bq_a.path(), &[])?;
             let checksum_b = checksum(bq_b.path(), &[])?;
@@ -223,7 +204,7 @@ mod tests {
     fn test_verify_detects_content_change() -> Result<()> {
         let in_tmp = write_fastx().call()?;
         let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
-        encode(in_tmp.path(), bq_tmp.path())?;
+        encode(in_tmp.path(), bq_tmp.path(), &[])?;
         let original = checksum(bq_tmp.path(), &[])?;
 
         let mut bytes = std::fs::read(bq_tmp.path())?;
@@ -242,7 +223,7 @@ mod tests {
     fn test_verify_skip_flags_change_checksum() -> Result<()> {
         let in_tmp = write_fastx().call()?;
         let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
-        encode(in_tmp.path(), bq_tmp.path())?;
+        encode(in_tmp.path(), bq_tmp.path(), &[])?;
 
         let full = checksum(bq_tmp.path(), &[])?;
         let skip_headers = checksum(bq_tmp.path(), &["--skip-headers"])?;
@@ -261,7 +242,7 @@ mod tests {
     fn test_verify_skip_flags_is_noop_without_flag_data() -> Result<()> {
         let in_tmp = write_fastx().call()?;
         let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
-        encode(in_tmp.path(), bq_tmp.path())?;
+        encode(in_tmp.path(), bq_tmp.path(), &[])?;
 
         let full = checksum(bq_tmp.path(), &[])?;
         let skip_flags = checksum(bq_tmp.path(), &["--skip-flags"])?;
@@ -276,7 +257,7 @@ mod tests {
     fn test_verify_skip_headers_is_noop_without_header_data() -> Result<()> {
         let in_tmp = write_fastx().call()?;
         let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
-        encode_without_headers(in_tmp.path(), bq_tmp.path())?;
+        encode(in_tmp.path(), bq_tmp.path(), &["--skip-headers"])?;
 
         let full = checksum(bq_tmp.path(), &[])?;
         let skip_headers = checksum(bq_tmp.path(), &["--skip-headers"])?;
@@ -302,9 +283,9 @@ mod tests {
             let in_tmp = write_fastx().nrec(20_000).include_n(false).call()?;
 
             let bq_a = NamedTempFile::with_suffix(mode.extension())?;
-            encode_without_headers(in_tmp.path(), bq_a.path())?;
+            encode(in_tmp.path(), bq_a.path(), &["--skip-headers"])?;
             let bq_b = NamedTempFile::with_suffix(mode.extension())?;
-            encode_without_headers(in_tmp.path(), bq_b.path())?;
+            encode(in_tmp.path(), bq_b.path(), &["--skip-headers"])?;
 
             let checksum_a = checksum(bq_a.path(), &[])?;
             let checksum_b = checksum(bq_b.path(), &[])?;
@@ -325,14 +306,26 @@ mod tests {
 
         let in_tmp = write_fastx().format(FileFormat::Fasta).call()?;
         let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
-        encode_without_headers(in_tmp.path(), bq_tmp.path())?;
+        encode(in_tmp.path(), bq_tmp.path(), &["--skip-headers"])?;
 
         let err = checksum(
             bq_tmp.path(),
             &["--skip-seq", "--skip-qual", "--skip-flags"],
         )
         .unwrap_err();
-        assert!(err.to_string().contains("no header data"));
+        assert!(err.to_string().contains("stores none"));
+        Ok(())
+    }
+
+    /// `.bq` stores only sequences, so skipping seq leaves nothing to hash.
+    #[test]
+    fn test_verify_rejects_no_stored_fields_left() -> Result<()> {
+        let in_tmp = write_fastx().call()?;
+        let bq_tmp = NamedTempFile::with_suffix(".bq")?;
+        encode(in_tmp.path(), bq_tmp.path(), &[])?;
+
+        let err = checksum(bq_tmp.path(), &["--skip-seq", "--skip-qual"]).unwrap_err();
+        assert!(err.to_string().contains("stores none"));
         Ok(())
     }
 
@@ -386,7 +379,7 @@ mod tests {
     fn test_verify_rejects_mate_two_on_single_channel_file() -> Result<()> {
         let in_tmp = write_fastx().call()?;
         let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
-        encode(in_tmp.path(), bq_tmp.path())?;
+        encode(in_tmp.path(), bq_tmp.path(), &[])?;
 
         let err = checksum(bq_tmp.path(), &["-M", "2"]).unwrap_err();
         assert!(err.to_string().contains("--mate/-M 2"));
@@ -396,13 +389,31 @@ mod tests {
         Ok(())
     }
 
+    /// Multiple inputs are accepted and each is checksummed.
+    #[test]
+    fn test_verify_multiple_inputs() -> Result<()> {
+        let in_tmp = write_fastx().call()?;
+        let a = NamedTempFile::with_suffix(".cbq")?;
+        let b = NamedTempFile::with_suffix(".cbq")?;
+        encode(in_tmp.path(), a.path(), &[])?;
+        encode(in_tmp.path(), b.path(), &[])?;
+        let cmd = crate::cli::VerifyCommand::try_parse_from([
+            "verify",
+            a.path().to_str().unwrap(),
+            b.path().to_str().unwrap(),
+        ])?;
+        assert_eq!(cmd.input.len(), 2);
+        super::run(&cmd)?;
+        Ok(())
+    }
+
     /// `verify::run` must not error for any mode or output option.
     #[test]
     fn test_verify_run_all_modes() -> Result<()> {
         for (mode, json_flag) in iproduct!(BinseqMode::enum_iter(), [&[][..], &["--json"]]) {
             let in_tmp = write_fastx().call()?;
             let bq_tmp = NamedTempFile::with_suffix(mode.extension())?;
-            encode(in_tmp.path(), bq_tmp.path())?;
+            encode(in_tmp.path(), bq_tmp.path(), &[])?;
 
             let mut args = vec![
                 "verify".to_string(),

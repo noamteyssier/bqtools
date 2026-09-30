@@ -1,6 +1,6 @@
 use clap::Parser;
 
-use super::{InputBinseq, Mate};
+use super::{input::Span, Mate};
 
 /// Compute an order-independent checksum over a BINSEQ file.
 ///
@@ -16,11 +16,19 @@ use super::{InputBinseq, Mate};
 /// random N policy (use `-p a`), headers are never stored in bq files, and
 /// `--span` selects records by file position, so spans are order-dependent.
 ///
-/// Prints `<16-hex checksum>\t<num_records>\t<path>`.
+/// Prints `<16-hex checksum>\t<num_records>\t<path>` for each input.
 #[derive(Parser, Debug)]
 pub struct VerifyCommand {
-    #[clap(flatten)]
-    pub input: InputBinseq,
+    /// Input BINSEQ files (.bq/.vbq/.cbq); one report line is printed per file
+    #[clap(num_args = 1.., required = true, help_heading = "INPUT FILE OPTIONS")]
+    pub input: Vec<String>,
+
+    /// Span of records to process, as `START..END` [default: all records]
+    ///
+    /// 0-based and end-exclusive; either bound may be omitted (e.g. `100..`,
+    /// `..500`). An end past the last record is clipped. Applies to every input.
+    #[clap(long, help_heading = "INPUT FILE OPTIONS")]
+    pub span: Option<Span>,
 
     #[clap(flatten)]
     pub opts: VerifyOptions,
