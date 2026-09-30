@@ -1,56 +1,49 @@
 # Installation
 
-## From Cargo
-
-bqtools can be installed using `cargo`, the Rust package manager:
+## From crates.io
 
 ```bash
 cargo install bqtools
 ```
 
-To install `cargo` you can follow the instructions on the [official Rust website](https://www.rust-lang.org/tools/install).
+Install `cargo` with [rustup](https://www.rust-lang.org/tools/install).
 
-## From Source
+## From source
 
 ```bash
-# Clone the repository
 git clone https://github.com/noamteyssier/bqtools.git
 cd bqtools
-
-# Install
 cargo install --path .
 
-# Check installation
-bqtools --help
+bqtools --help  # verify
 ```
 
-## Feature Flags
+## Feature flags
 
-bqtools supports the following feature flags:
+| Flag | Enables | Default |
+| --- | --- | --- |
+| `htslib` | Reading SAM/BAM/CRAM via [`htslib`](https://docs.rs/rust-htslib/latest/rust_htslib/) | yes |
+| `gcs` | Reading from Google Cloud Storage | no |
+| `fuzzy` | Fuzzy matching in `grep` and `split` via [`sassy`](https://crates.io/crates/sassy) | no |
 
-- `htslib`: Enable support for reading SAM/BAM/CRAM files using the [`htslib`](https://docs.rs/rust-htslib/latest/rust_htslib/) library (default).
-- `gcs`: Enable support for reading Google Cloud Storage files.
-- `fuzzy`: Enable fuzzy matching in the `grep` and `split` commands using the [`sassy`](https://crates.io/crates/sassy) library
-
-To enable fuzzy matching, `bqtools` must be compiled using a `native` target cpu:
+`fuzzy` requires building for the native CPU:
 
 ```bash
-# Install from source
-export RUSTFLAGS="-C target-cpu=native"; cargo install --path . -F fuzzy;
+export RUSTFLAGS="-C target-cpu=native"
 
-# Or install from crates but enforce native target cpu
-export RUSTFLAGS="-C target-cpu=native"; cargo install bqtools -F fuzzy;
+# from crates.io
+cargo install bqtools -F fuzzy
+
+# from source
+cargo install --path . -F fuzzy
 ```
 
-To selectively enable/disable feature flags:
+To change the defaults, disable them and list the flags you want:
 
 ```bash
-# (for fuzzy matching support sassy requires native target cpu)
-export RUSTFLAGS="-C target-cpu=native";
-
-# Install bqtools without htslib but with fuzzy matching
+# no htslib, with fuzzy matching
 cargo install bqtools --no-default-features -F fuzzy
-#
-# Install bqtools without htslib but with fuzzy matching and gcs
+
+# no htslib, with fuzzy matching and gcs
 cargo install bqtools --no-default-features -F fuzzy,gcs
 ```

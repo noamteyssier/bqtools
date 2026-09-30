@@ -200,3 +200,19 @@
 .cli-reference dd code {
   color: var(--gb-orange);
 }
+
+/* Admonitions: body-sized text, full-strength foreground */
+.md-typeset .admonition,
+.md-typeset details {
+  --md-admonition-fg-color: var(--md-default-fg-color);
+  font-size: 1em;
+  color: var(--md-default-fg-color);
+}
+.md-typeset .admonition-title,
+.md-typeset summary {
+  font-size: 1em;
+  color: var(--md-default-fg-color);
+}
+.md-typeset .admonition p {
+  color: inherit;
+}
