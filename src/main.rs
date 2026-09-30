@@ -1,13 +1,5 @@
-#![allow(clippy::module_inception)]
-
-mod cli;
-mod commands;
-mod types;
-
-#[cfg(test)]
-mod testutils;
-
-use cli::{Cli, Commands};
+use bqtools::cli::{Cli, Commands};
+use bqtools::commands;
 
 use anyhow::Result;
 use clap::Parser;

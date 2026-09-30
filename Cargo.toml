@@ -43,6 +43,12 @@ default = ["htslib"]
 fuzzy = ["sassy"]
 htslib = ["paraseq/htslib"]
 gcs = ["paraseq/gcs"]
+bqdoc = []
+
+[[bin]]
+name = "bqdoc"
+path = "src/bin/bqdoc.rs"
+required-features = ["bqdoc"]
 
 [profile.release]
 # debug = true

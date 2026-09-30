@@ -1,0 +1,202 @@
+/* Styling for the generated command reference (see src/bin/bqdoc.rs). */
+.cli-reference dd {
+  margin-top: 0.1em;
+  margin-bottom: 0.5em;
+}
+.cli-reference dd p {
+  margin-block-start: 0.2em;
+  margin-block-end: 0.3em;
+}
+.cli-reference ul {
+  margin-bottom: 0.1em;
+}
+.cli-reference dt a {
+  color: inherit;
+}
+.cli-reference dt i {
+  opacity: 0.7;
+}
+
+/* Gruvbox palette */
+[data-md-color-scheme="gruvbox-dark"] {
+  --gb-bg-h: #1d2021;
+  --gb-bg: #282828;
+  --gb-bg1: #3c3836;
+  --gb-bg2: #504945;
+  --gb-fg: #ebdbb2;
+  --gb-fg2: #d5c4a1;
+  --gb-gray: #928374;
+  --gb-red: #fb4934;
+  --gb-green: #b8bb26;
+  --gb-yellow: #fabd2f;
+  --gb-blue: #83a598;
+  --gb-purple: #d3869b;
+  --gb-aqua: #8ec07c;
+  --gb-orange: #fe8019;
+  --md-hue: 30deg;
+  --md-default-fg-color: var(--gb-fg);
+  --md-default-fg-color--light: var(--gb-fg2);
+  --md-default-fg-color--lighter: var(--gb-gray);
+  --md-default-fg-color--lightest: var(--gb-bg2);
+  --md-default-bg-color: var(--gb-bg);
+  --md-default-bg-color--light: rgba(40, 40, 40, 0.7);
+  --md-default-bg-color--lighter: rgba(40, 40, 40, 0.3);
+  --md-default-bg-color--lightest: rgba(40, 40, 40, 0.1);
+  --md-primary-fg-color: var(--gb-bg);
+  --md-primary-fg-color--light: var(--gb-bg1);
+  --md-primary-fg-color--dark: var(--gb-bg-h);
+  --md-primary-bg-color: var(--gb-fg);
+  --md-primary-bg-color--light: var(--gb-fg2);
+  --md-accent-fg-color: var(--gb-orange);
+  --md-accent-fg-color--transparent: rgba(254, 128, 25, 0.1);
+  --md-accent-bg-color: var(--gb-bg);
+  --md-typeset-color: var(--gb-fg);
+  --md-typeset-a-color: var(--gb-yellow);
+  --md-typeset-mark-color: rgba(250, 189, 47, 0.3);
+  --md-typeset-kbd-color: var(--gb-bg1);
+  --md-typeset-kbd-accent-color: var(--gb-bg2);
+  --md-typeset-kbd-border-color: var(--gb-bg-h);
+  --md-typeset-table-color: rgba(235, 219, 178, 0.12);
+  --md-code-bg-color: var(--gb-bg1);
+  --md-code-bg-color--light: rgba(60, 56, 54, 0.9);
+  --md-code-bg-color--lighter: rgba(60, 56, 54, 0.54);
+  --md-code-fg-color: var(--gb-fg);
+  --md-code-hl-color: rgba(250, 189, 47, 0.15);
+  --md-code-hl-number-color: var(--gb-purple);
+  --md-code-hl-special-color: var(--gb-red);
+  --md-code-hl-function-color: var(--gb-green);
+  --md-code-hl-constant-color: var(--gb-purple);
+  --md-code-hl-keyword-color: var(--gb-red);
+  --md-code-hl-string-color: var(--gb-green);
+  --md-code-hl-name-color: var(--gb-fg);
+  --md-code-hl-operator-color: var(--gb-aqua);
+  --md-code-hl-punctuation-color: var(--gb-fg2);
+  --md-code-hl-comment-color: var(--gb-gray);
+  --md-code-hl-generic-color: var(--gb-fg2);
+  --md-code-hl-variable-color: var(--gb-blue);
+  --md-footer-bg-color: var(--gb-bg-h);
+  --md-footer-bg-color--dark: var(--gb-bg-h);
+  --md-footer-fg-color: var(--gb-fg);
+  --md-footer-fg-color--light: var(--gb-fg2);
+  --md-footer-fg-color--lighter: var(--gb-gray);
+  --md-shadow-z1: 0 0.2rem 0.5rem rgba(0, 0, 0, 0.3);
+  --md-shadow-z2: 0 0.2rem 0.5rem rgba(0, 0, 0, 0.4);
+  --md-shadow-z3: 0 0.2rem 0.5rem rgba(0, 0, 0, 0.5);
+}
+
+[data-md-color-scheme="gruvbox-light"] {
+  --gb-bg-h: #f9f5d7;
+  --gb-bg: #fbf1c7;
+  --gb-bg1: #ebdbb2;
+  --gb-bg2: #d5c4a1;
+  --gb-fg: #3c3836;
+  --gb-fg2: #504945;
+  --gb-gray: #7c6f64;
+  --gb-red: #9d0006;
+  --gb-green: #79740e;
+  --gb-yellow: #b57614;
+  --gb-blue: #076678;
+  --gb-purple: #8f3f71;
+  --gb-aqua: #427b58;
+  --gb-orange: #af3a03;
+  --md-default-fg-color: var(--gb-fg);
+  --md-default-fg-color--light: var(--gb-fg2);
+  --md-default-fg-color--lighter: var(--gb-gray);
+  --md-default-fg-color--lightest: var(--gb-bg2);
+  --md-default-bg-color: var(--gb-bg);
+  --md-primary-fg-color: var(--gb-bg1);
+  --md-primary-fg-color--light: var(--gb-bg2);
+  --md-primary-fg-color--dark: var(--gb-bg2);
+  --md-primary-bg-color: var(--gb-fg);
+  --md-primary-bg-color--light: var(--gb-fg2);
+  --md-accent-fg-color: var(--gb-orange);
+  --md-accent-fg-color--transparent: rgba(175, 58, 3, 0.1);
+  --md-typeset-color: var(--gb-fg);
+  --md-typeset-a-color: var(--gb-blue);
+  --md-typeset-mark-color: rgba(181, 118, 20, 0.3);
+  --md-typeset-table-color: rgba(60, 56, 54, 0.15);
+  --md-code-bg-color: var(--gb-bg1);
+  --md-code-bg-color--light: rgba(235, 219, 178, 0.9);
+  --md-code-bg-color--lighter: rgba(235, 219, 178, 0.54);
+  --md-code-fg-color: var(--gb-fg);
+  --md-code-hl-color: rgba(181, 118, 20, 0.15);
+  --md-code-hl-number-color: var(--gb-purple);
+  --md-code-hl-special-color: var(--gb-red);
+  --md-code-hl-function-color: var(--gb-green);
+  --md-code-hl-constant-color: var(--gb-purple);
+  --md-code-hl-keyword-color: var(--gb-red);
+  --md-code-hl-string-color: var(--gb-green);
+  --md-code-hl-name-color: var(--gb-fg);
+  --md-code-hl-operator-color: var(--gb-aqua);
+  --md-code-hl-punctuation-color: var(--gb-fg2);
+  --md-code-hl-comment-color: var(--gb-gray);
+  --md-code-hl-generic-color: var(--gb-fg2);
+  --md-code-hl-variable-color: var(--gb-blue);
+  --md-footer-bg-color: var(--gb-bg1);
+  --md-footer-bg-color--dark: var(--gb-bg2);
+  --md-footer-fg-color: var(--gb-fg);
+  --md-footer-fg-color--light: var(--gb-fg2);
+  --md-footer-fg-color--lighter: var(--gb-gray);
+}
+
+/* Accents shared by both schemes */
+.md-typeset h1 {
+  color: var(--gb-orange);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.md-typeset h2 {
+  color: var(--gb-yellow);
+  font-weight: 600;
+}
+.md-typeset h3 {
+  color: var(--gb-aqua);
+}
+.md-typeset a:hover {
+  color: var(--gb-orange);
+}
+.md-header {
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+  box-shadow: none;
+}
+.md-typeset code {
+  border-radius: 0.25rem;
+  color: var(--gb-orange);
+}
+.md-typeset pre > code {
+  color: var(--md-code-fg-color);
+}
+.md-typeset pre {
+  border-radius: 0.4rem;
+}
+.md-nav__item .md-nav__link--active,
+.md-nav__link:is(:focus, :hover) {
+  color: var(--gb-orange);
+}
+
+/* Command reference: each option is a card-like row with an accent rule */
+.cli-reference dt {
+  margin-top: 1.1em;
+  padding-left: 0.7em;
+  border-left: 3px solid var(--gb-orange);
+}
+.cli-reference dt code {
+  color: var(--gb-yellow);
+  background: transparent;
+  font-weight: 600;
+  padding: 0;
+}
+.cli-reference dt i {
+  color: var(--gb-aqua);
+  opacity: 1;
+  font-family: var(--md-code-font-family);
+  font-size: 0.85em;
+}
+.cli-reference dd {
+  margin-left: 0;
+  padding-left: calc(0.7em + 3px);
+  color: var(--md-default-fg-color--light);
+}
+.cli-reference dd code {
+  color: var(--gb-orange);
+}

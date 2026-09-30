@@ -20,3 +20,11 @@ test-all:
 
 install:
     cargo install --path .
+
+docs:
+    cargo run --all-features --bin bqdoc
+    uvx zensical build
+
+docs-serve:
+    cargo run --all-features --bin bqdoc
+    uvx zensical serve
