@@ -448,3 +448,17 @@ fn rejected_invocations() {
     #[cfg(feature = "fuzzy")]
     fails(false, &["-z", "GATTA", "CC"]); // mixed pattern lengths
 }
+
+#[test]
+fn count_rejects_compress() {
+    let fx = Fixture::new();
+    for flag in ["-C", "-F", "-P"] {
+        let args = [
+            flag.to_string(),
+            "-c".to_string(),
+            "g".to_string(),
+            "@GATTA".to_string(),
+        ];
+        assert!(!fx.run(false, &args).0, "{flag} -c should be rejected");
+    }
+}

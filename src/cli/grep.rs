@@ -76,14 +76,14 @@ pub struct GrepArgs {
     pub header: bool,
 
     /// Only print the number of matching records to stdout
-    #[clap(short = 'C', long, conflicts_with_all = ["pattern_count", "output", "prefix"])]
+    #[clap(short = 'C', long, conflicts_with_all = ["pattern_count", "output", "prefix", "compress"])]
     pub count: bool,
 
     /// Show match count as a fraction of total records
     ///
     /// Implies --count (-C). Displays the number of matches,
     /// total records, and the fraction of records matching.
-    #[clap(short = 'F', long, conflicts_with_all = ["pattern_count", "output", "prefix"])]
+    #[clap(short = 'F', long, conflicts_with_all = ["pattern_count", "output", "prefix", "compress"])]
     pub frac: bool,
 
     /// Only match patterns that are within this range.
@@ -101,7 +101,7 @@ pub struct GrepArgs {
     /// Note that a sequence may contribute to multiple patterns counts.
     /// A pattern will also only be counted once per sequence. With `-v`,
     /// counts records that do NOT contain each pattern.
-    #[clap(short = 'P', long, conflicts_with_all = ["count", "output", "prefix"])]
+    #[clap(short = 'P', long, conflicts_with_all = ["count", "output", "prefix", "compress"])]
     pub pattern_count: bool,
 
     /// Denotes patterns are fixed strings (non-regex)
