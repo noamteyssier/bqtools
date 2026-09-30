@@ -4,7 +4,7 @@ use binseq::{BinseqReader, BinseqRecord};
 use std::io::Write;
 
 use super::{
-    decode::{keep, run_with},
+    decode::{run_with, Sample},
     encode::processor::Encoder,
     utils::builder_from_reader,
 };
@@ -12,21 +12,19 @@ use super::{
 /// Encoder that only keeps the sampled records.
 struct Sampler<W: Write + Send> {
     inner: Encoder<W>,
-    fraction: f64,
-    seed: u64,
+    sample: Sample,
 }
 impl<W: Write + Send> Clone for Sampler<W> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            fraction: self.fraction,
-            seed: self.seed,
+            sample: self.sample.clone(),
         }
     }
 }
 impl<W: Write + Send> binseq::ParallelProcessor for Sampler<W> {
     fn process_record<R: BinseqRecord>(&mut self, record: R) -> binseq::Result<()> {
-        if keep(record.index(), self.fraction, self.seed) {
+        if self.sample.keep(record.index()) {
             self.inner.process_record(record)?;
         }
         Ok(())
@@ -39,6 +37,15 @@ impl<W: Write + Send> binseq::ParallelProcessor for Sampler<W> {
     }
 }
 
+fn make_sample(args: &SampleCommand, range: std::ops::Range<usize>) -> Option<Sample> {
+    let (seed, num, fraction) = (args.sample.seed, args.sample.num, args.sample.fraction);
+    match (num, fraction) {
+        (Some(n), _) => Some(Sample::exact(n, range, seed)),
+        (None, Some(fraction)) => Some(Sample::Fraction { fraction, seed }),
+        (None, None) => None,
+    }
+}
+
 fn run_binseq(args: &SampleCommand) -> Result<()> {
     let reader = BinseqReader::new(args.input.path())?;
     let out = OutputBinseqInherited {
@@ -47,12 +54,11 @@ fn run_binseq(args: &SampleCommand) -> Result<()> {
         threads: args.output.threads,
     };
     let writer = builder_from_reader(&reader).build(out.as_writer(args.input.mode()?)?)?;
+    let range = args.input.range(reader.num_records()?)?;
     let mut proc = Sampler {
         inner: Encoder::new(writer)?,
-        fraction: args.sample.fraction,
-        seed: args.sample.seed,
+        sample: make_sample(args, range.clone()).expect("fraction or num is required"),
     };
-    let range = args.input.range(reader.num_records()?)?;
     reader.process_parallel_range(proc.clone(), out.threads(), range)?;
     proc.inner.finish()?;
     Ok(())
@@ -67,11 +73,7 @@ pub fn run(args: &SampleCommand) -> Result<()> {
     {
         return run_binseq(args);
     }
-    run_with(
-        &args.input,
-        &args.output,
-        Some((args.sample.fraction, args.sample.seed)),
-    )?;
+    run_with(&args.input, &args.output, |range| make_sample(args, range))?;
     Ok(())
 }
 
@@ -131,6 +133,54 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    /// `-n` keeps exactly N records (also inside a span), for every mode.
+    #[test]
+    fn test_sample_exact_num() -> Result<()> {
+        for mode in BinseqMode::enum_iter() {
+            let in_tmp = write_fastx().nrec(500).call()?;
+            let bq_tmp = NamedTempFile::with_suffix(mode.extension())?;
+            encode(in_tmp.path(), bq_tmp.path())?;
+
+            for (extra, expected) in [
+                (vec![], 123),
+                (vec!["--span", "100..200"], 50),
+                (vec![], 500),
+            ] {
+                for threads in ["1", "4"] {
+                    let out_tmp = NamedTempFile::with_suffix(".fastq")?;
+                    let n = expected.to_string();
+                    let cmd = crate::cli::SampleCommand::try_parse_from(
+                        [
+                            "sample",
+                            bq_tmp.path().to_str().unwrap(),
+                            "-n",
+                            &n,
+                            "-T",
+                            threads,
+                            "-o",
+                            out_tmp.path().to_str().unwrap(),
+                        ]
+                        .into_iter()
+                        .chain(extra.iter().copied()),
+                    )?;
+                    super::run(&cmd)?;
+                    assert_eq!(count_fastx_records(out_tmp.path())?, expected, "{mode:?}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `-F` and `-n` are mutually exclusive, and one is required.
+    #[test]
+    fn test_sample_fraction_num_exclusive() {
+        assert!(crate::cli::SampleCommand::try_parse_from([
+            "sample", "x.cbq", "-F", "0.5", "-n", "3"
+        ])
+        .is_err());
+        assert!(crate::cli::SampleCommand::try_parse_from(["sample", "x.cbq"]).is_err());
     }
 
     /// Sampling at fraction=1.0 must return all records exactly.
