@@ -27,12 +27,13 @@ fn encode_sam_from_stdin() {
 /// regression for #107: multi-threaded htslib SAM encode used to hang
 #[test]
 fn encode_sam_multithreaded_from_file() {
+    use std::fmt::Write as _;
     let dir = tempfile::tempdir().unwrap();
     let sam = dir.path().join("r.sam");
     let out = dir.path().join("o.cbq");
     let mut s = String::from("@HD\tVN:1.6\n");
     for i in 0..5000 {
-        s += &format!("r{i}\t4\t*\t0\t0\t*\t*\t0\t0\tACGTACGT\tIIIIIIII\n");
+        writeln!(s, "r{i}\t4\t*\t0\t0\t*\t*\t0\t0\tACGTACGT\tIIIIIIII").unwrap();
     }
     std::fs::write(&sam, s).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_bqtools"))
