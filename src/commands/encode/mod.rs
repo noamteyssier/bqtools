@@ -212,6 +212,9 @@ fn process_file_list(args: &EncodeCommand, file_queue: Vec<PathBuf>) -> Result<(
     if file_queue.is_empty() {
         bail!("No files found");
     }
+    if args.output.pipe {
+        bail!("--pipe is not supported in batch mode");
+    }
 
     let mut sorted_queue = file_queue;
     sorted_queue.sort_unstable();
@@ -335,7 +338,12 @@ pub fn run(args: &EncodeCommand) -> Result<()> {
         run_manifest_inline(args)
     } else {
         trace!("launching encode-atomic");
-        run_atomic(args)
+        run_atomic(args).inspect_err(|_| {
+            if let Ok(Some(path)) = args.output_path() {
+                trace!("Removing partial file: {path}");
+                let _ = std::fs::remove_file(path);
+            }
+        })
     }
 }
 
@@ -581,5 +589,27 @@ mod tests {
         let reader = binseq::BinseqReader::new(out_path.to_str().unwrap())?;
         assert!(matches!(reader, binseq::BinseqReader::Vbq(_)));
         Ok(())
+    }
+
+    #[test]
+    fn test_pipe_rejected_in_batch_mode() {
+        let args =
+            crate::cli::EncodeCommand::parse_from(["encode", "a.fq", "b.fq", "c.fq", "--pipe"]);
+        assert!(super::run(&args).is_err());
+    }
+
+    #[test]
+    fn test_failed_atomic_removes_partial_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let (bad, out) = (dir.path().join("bad.fq"), dir.path().join("o.bq"));
+        std::fs::write(&bad, "not fastq\n").unwrap();
+        let args = crate::cli::EncodeCommand::parse_from([
+            "encode",
+            bad.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        assert!(super::run(&args).is_err());
+        assert!(!out.exists());
     }
 }

@@ -1,9 +1,72 @@
-use crate::cli::SampleCommand;
+use crate::cli::{BinseqMode, OutputBinseqInherited, SampleCommand};
 use anyhow::Result;
+use binseq::{BinseqReader, BinseqRecord};
+use std::io::Write;
 
-use super::decode::run_with;
+use super::{
+    decode::{keep, run_with},
+    encode::processor::Encoder,
+    utils::builder_from_reader,
+};
+
+/// Encoder that only keeps the sampled records.
+struct Sampler<W: Write + Send> {
+    inner: Encoder<W>,
+    fraction: f64,
+    seed: u64,
+}
+impl<W: Write + Send> Clone for Sampler<W> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            fraction: self.fraction,
+            seed: self.seed,
+        }
+    }
+}
+impl<W: Write + Send> binseq::ParallelProcessor for Sampler<W> {
+    fn process_record<R: BinseqRecord>(&mut self, record: R) -> binseq::Result<()> {
+        if keep(record.index(), self.fraction, self.seed) {
+            self.inner.process_record(record)?;
+        }
+        Ok(())
+    }
+    fn on_batch_complete(&mut self) -> binseq::Result<()> {
+        self.inner.on_batch_complete()
+    }
+    fn on_thread_complete(&mut self) -> binseq::Result<()> {
+        self.inner.on_thread_complete()
+    }
+}
+
+fn run_binseq(args: &SampleCommand) -> Result<()> {
+    let reader = BinseqReader::new(args.input.path())?;
+    let out = OutputBinseqInherited {
+        output: args.output.output.clone(),
+        pipe: false,
+        threads: args.output.threads,
+    };
+    let writer = builder_from_reader(&reader).build(out.as_writer(args.input.mode()?)?)?;
+    let mut proc = Sampler {
+        inner: Encoder::new(writer)?,
+        fraction: args.sample.fraction,
+        seed: args.sample.seed,
+    };
+    let range = args.input.range(reader.num_records()?)?;
+    reader.process_parallel_range(proc.clone(), out.threads(), range)?;
+    proc.inner.finish()?;
+    Ok(())
+}
 
 pub fn run(args: &SampleCommand) -> Result<()> {
+    if args
+        .output
+        .output
+        .as_deref()
+        .is_some_and(|p| BinseqMode::determine(p).is_ok())
+    {
+        return run_binseq(args);
+    }
     run_with(
         &args.input,
         &args.output,
@@ -87,6 +150,25 @@ mod tests {
                 nrec,
                 "sample fraction=1.0 should return all records for {mode:?}"
             );
+        }
+        Ok(())
+    }
+
+    /// `-o x.<mode>` writes a BINSEQ file with the sampled records.
+    #[test]
+    fn test_sample_binseq_output() -> Result<()> {
+        for mode in BinseqMode::enum_iter() {
+            let in_tmp = write_fastx().nrec(200).call()?;
+            let bq_tmp = NamedTempFile::with_suffix(mode.extension())?;
+            encode(in_tmp.path(), bq_tmp.path())?;
+
+            let out_tmp = NamedTempFile::with_suffix(mode.extension())?;
+            sample(bq_tmp.path(), out_tmp.path(), 1.0, 42, 1)?;
+            assert_eq!(crate::testutils::count_binseq(out_tmp.path())?, 200);
+
+            sample(bq_tmp.path(), out_tmp.path(), 0.5, 42, 1)?;
+            let n = crate::testutils::count_binseq(out_tmp.path())?;
+            assert!(n > 50 && n < 150, "{n} {mode:?}");
         }
         Ok(())
     }

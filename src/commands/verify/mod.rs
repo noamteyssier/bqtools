@@ -66,26 +66,26 @@ fn compute(args: &VerifyCommand, path: &str) -> Result<VerifyReport> {
     let reader = BinseqReader::new(path)?;
     if args.opts.mate == Mate::Two && !reader.is_paired() {
         bail!(
-            "`--mate/-M 2` was requested but `{}` is single-channel (no extended/mate-2 \
-             sequence); the checksum would be computed over no fields",
-            path
+            "`--mate/-M 2` was requested but `{path}` is single-channel (no extended/mate-2 \
+             sequence); the checksum would be computed over no fields"
         );
     }
 
+    let (stored_qual, stored_flags) = match &reader {
+        BinseqReader::Bq(_) => (false, false),
+        BinseqReader::Vbq(r) => (r.header().qual, r.header().flags),
+        BinseqReader::Cbq(r) => (r.header().has_qualities(), r.header().has_flags()),
+    };
     if fields.headers && !reader_has_headers(&reader) {
-        fields.headers = false;
-        if fields.seq || fields.qual || fields.flags {
-            warn!(
-                "`{}` has no header data; excluding headers from the checksum",
-                path
-            );
-        } else {
-            bail!(
-                "`{}` has no header data, and seq/qual/flags were all skipped; the checksum \
-                 would be computed over no fields",
-                path
-            );
-        }
+        warn!("`{path}` has no header data; excluding headers from the checksum");
+    }
+    fields.headers &= reader_has_headers(&reader);
+    fields.qual &= stored_qual;
+    fields.flags &= stored_flags;
+    if !(fields.seq || fields.qual || fields.headers || fields.flags) {
+        bail!(
+            "`{path}` stores none of the selected fields; the checksum would be computed over no fields"
+        );
     }
 
     let processor = VerifyProcessor::new(fields, args.opts.mate);
@@ -169,7 +169,10 @@ mod tests {
         let mut cmd_args = vec!["verify".to_string(), path.to_str().unwrap().to_string()];
         cmd_args.extend(extra.iter().map(std::string::ToString::to_string));
         let cmd = crate::cli::VerifyCommand::try_parse_from(cmd_args)?;
-        Ok(u64::from_str_radix(&super::compute(&cmd, path.to_str().unwrap())?.checksum, 16)?)
+        Ok(u64::from_str_radix(
+            &super::compute(&cmd, path.to_str().unwrap())?.checksum,
+            16,
+        )?)
     }
 
     /// Re-encoding the same input twice (independent parallel runs, so record
@@ -310,7 +313,19 @@ mod tests {
             &["--skip-seq", "--skip-qual", "--skip-flags"],
         )
         .unwrap_err();
-        assert!(err.to_string().contains("no header data"));
+        assert!(err.to_string().contains("stores none"));
+        Ok(())
+    }
+
+    /// `.bq` stores only sequences, so skipping seq leaves nothing to hash.
+    #[test]
+    fn test_verify_rejects_no_stored_fields_left() -> Result<()> {
+        let in_tmp = write_fastx().call()?;
+        let bq_tmp = NamedTempFile::with_suffix(".bq")?;
+        encode(in_tmp.path(), bq_tmp.path(), &[])?;
+
+        let err = checksum(bq_tmp.path(), &["--skip-seq", "--skip-qual"]).unwrap_err();
+        assert!(err.to_string().contains("stores none"));
         Ok(())
     }
 

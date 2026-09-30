@@ -393,6 +393,10 @@ fn pattern_files() {
     let txt = fx.file("pats.txt", "GATTA\nCCCC\n");
     let head = "name\tcount\tfrac_total\n";
 
+    // blank lines in a txt file are skipped, not empty patterns
+    let blank = fx.file("blank.txt", "GATTA\n\nCCCC\n\n");
+    assert_eq!(fx.ok(false, &["-C", "--file", &blank]), "3\n");
+
     // pattern files always combine with OR (AND would give only r1)
     assert_eq!(sorted_lines(&fx.ok(false, &["--file", &fa])), pair(&[1, 2]));
     assert_eq!(fx.ok(false, &["-C", "--file", &txt]), "3\n");
@@ -447,4 +451,32 @@ fn rejected_invocations() {
     fails(false, &["-C", "-P", "GATTA"]); // exclusive modes
     #[cfg(feature = "fuzzy")]
     fails(false, &["-z", "GATTA", "CC"]); // mixed pattern lengths
+}
+
+#[test]
+fn split_rejects_xfile_on_single_end() {
+    let f = Fixture::new();
+    let x = f.file("x.txt", "GATTACAGAT\n");
+    let out = Command::new(env!("CARGO_BIN_EXE_bqtools"))
+        .args(["split"])
+        .arg(&f.single)
+        .args(["-R", &x, "--basepath"])
+        .arg(f.dir.path().join("o"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn count_rejects_compress() {
+    let fx = Fixture::new();
+    for flag in ["-C", "-F", "-P"] {
+        let args = [
+            flag.to_string(),
+            "-c".to_string(),
+            "g".to_string(),
+            "@GATTA".to_string(),
+        ];
+        assert!(!fx.run(false, &args).0, "{flag} -c should be rejected");
+    }
 }

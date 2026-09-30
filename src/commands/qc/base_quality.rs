@@ -3,6 +3,7 @@ use std::{io::Write, path::Path};
 use anyhow::Result;
 use binseq::BinseqRecord;
 use serde::Serialize;
+use serde_json::{json, Value};
 
 use super::{
     report::{add_assign, stats, table, write_tsv, Hist, Pair},
@@ -47,6 +48,42 @@ impl BaseHistogram {
     fn position_means(&self) -> Vec<f64> {
         self.inner.iter().map(|counts| stats(counts).1).collect()
     }
+
+    /// `(positions, overall mean, (pos, mean) of lowest, (pos, mean) of highest)`.
+    #[allow(clippy::type_complexity)]
+    fn headline(&self) -> Option<(usize, f64, (usize, f64), (usize, f64))> {
+        if self.is_empty() {
+            return None;
+        }
+        let mut num = 0usize;
+        let mut den = 0usize;
+        for counts in &self.inner {
+            for (q, &c) in counts.iter().enumerate() {
+                num += q * c;
+                den += c;
+            }
+        }
+        let overall_mean = if den == 0 {
+            0.0
+        } else {
+            num as f64 / den as f64
+        };
+
+        let means = self.position_means();
+        let min = means
+            .iter()
+            .copied()
+            .enumerate()
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap_or((0, 0.0));
+        let max = means
+            .iter()
+            .copied()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap_or((0, 0.0));
+        Some((means.len(), overall_mean, min, max))
+    }
 }
 impl Hist for BaseHistogram {
     /// Checks if empty
@@ -81,42 +118,12 @@ impl Hist for BaseHistogram {
     }
 
     fn summary_table(&self) -> Option<String> {
-        if self.is_empty() {
-            return None;
-        }
-
-        let mut num = 0usize;
-        let mut den = 0usize;
-        for counts in &self.inner {
-            for (q, &c) in counts.iter().enumerate() {
-                num += q * c;
-                den += c;
-            }
-        }
-        let overall_mean = if den == 0 {
-            0.0
-        } else {
-            num as f64 / den as f64
-        };
-
-        let means = self.position_means();
-        let (min_pos, min_mean) = means
-            .iter()
-            .copied()
-            .enumerate()
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .unwrap_or((0, 0.0));
-        let (max_pos, max_mean) = means
-            .iter()
-            .copied()
-            .enumerate()
-            .max_by(|a, b| a.1.total_cmp(&b.1))
-            .unwrap_or((0, 0.0));
-
+        let (positions, overall_mean, (min_pos, min_mean), (max_pos, max_mean)) =
+            self.headline()?;
         Some(table(
             &["Metric", "Value"],
             &[
-                vec!["Positions".into(), means.len().to_string()],
+                vec!["Positions".into(), positions.to_string()],
                 vec!["Mean Quality".into(), format!("{overall_mean:.2}")],
                 vec![
                     "Lowest Mean Quality".into(),
@@ -128,6 +135,16 @@ impl Hist for BaseHistogram {
                 ],
             ],
         ))
+    }
+
+    fn json(&self) -> Option<Value> {
+        let (positions, mean, (min_pos, min_mean), (max_pos, max_mean)) = self.headline()?;
+        Some(json!({
+            "positions": positions,
+            "mean_quality": mean,
+            "lowest": {"pos": min_pos, "mean": min_mean},
+            "highest": {"pos": max_pos, "mean": max_mean},
+        }))
     }
 }
 
@@ -149,6 +166,10 @@ impl PerBaseSequenceQuality {
 
     pub fn summarize(&self) -> String {
         self.0.summarize("Per-Base Sequence Quality")
+    }
+
+    pub fn json(&self) -> Value {
+        self.0.json()
     }
 }
 

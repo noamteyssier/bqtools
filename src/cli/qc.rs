@@ -66,6 +66,10 @@ pub struct QcOptions {
     #[clap(long, default_value_t = 0.1, value_parser = parse_percent)]
     pub overrepresented_threshold: f64,
 
+    /// Also write `summary.json` (overview and per-module summaries) to the output directory
+    #[clap(long)]
+    pub json: bool,
+
     /// Output directory for the report and TSVs (created if missing)
     #[clap(short, long, default_value = "./bqtools-qc")]
     pub outdir: String,
