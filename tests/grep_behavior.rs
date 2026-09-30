@@ -393,6 +393,10 @@ fn pattern_files() {
     let txt = fx.file("pats.txt", "GATTA\nCCCC\n");
     let head = "name\tcount\tfrac_total\n";
 
+    // blank lines in a txt file are skipped, not empty patterns
+    let blank = fx.file("blank.txt", "GATTA\n\nCCCC\n\n");
+    assert_eq!(fx.ok(false, &["-C", "--file", &blank]), "3\n");
+
     // pattern files always combine with OR (AND would give only r1)
     assert_eq!(sorted_lines(&fx.ok(false, &["--file", &fa])), pair(&[1, 2]));
     assert_eq!(fx.ok(false, &["-C", "--file", &txt]), "3\n");
