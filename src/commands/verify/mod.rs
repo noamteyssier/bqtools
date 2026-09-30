@@ -6,7 +6,7 @@ use clap::ValueEnum;
 use log::warn;
 use serde::Serialize;
 
-use crate::cli::{Mate, VerifyCommand, VerifyOptions};
+use crate::cli::{InputBinseq, Mate, VerifyCommand, VerifyOptions};
 use processor::{FieldMask, VerifyProcessor};
 
 /// Whether `reader`'s underlying file actually stores per-record headers.
@@ -56,15 +56,19 @@ fn field_labels(f: FieldMask) -> Vec<&'static str> {
 }
 
 /// Runs the checksum computation without printing, so it can be reused by tests.
-fn compute(args: &VerifyCommand) -> Result<VerifyReport> {
+fn compute(args: &VerifyCommand, path: &str) -> Result<VerifyReport> {
     let mut fields = field_mask(&args.opts)?;
 
-    let reader = BinseqReader::new(args.input.path())?;
+    let input = InputBinseq {
+        input: path.to_string(),
+        span: args.span,
+    };
+    let reader = BinseqReader::new(path)?;
     if args.opts.mate == Mate::Two && !reader.is_paired() {
         bail!(
             "`--mate/-M 2` was requested but `{}` is single-channel (no extended/mate-2 \
              sequence); the checksum would be computed over no fields",
-            args.input.path()
+            path
         );
     }
 
@@ -73,24 +77,24 @@ fn compute(args: &VerifyCommand) -> Result<VerifyReport> {
         if fields.seq || fields.qual || fields.flags {
             warn!(
                 "`{}` has no header data; excluding headers from the checksum",
-                args.input.path()
+                path
             );
         } else {
             bail!(
                 "`{}` has no header data, and seq/qual/flags were all skipped; the checksum \
                  would be computed over no fields",
-                args.input.path()
+                path
             );
         }
     }
 
     let processor = VerifyProcessor::new(fields, args.opts.mate);
 
-    let range = args.input.range(reader.num_records()?)?;
+    let range = input.range(reader.num_records()?)?;
     reader.process_parallel_range(processor.clone(), args.opts.threads, range)?;
 
     Ok(VerifyReport {
-        path: args.input.path().to_string(),
+        path: path.to_string(),
         algorithm: "xxh3-64/wrapping-sum",
         fields: field_labels(fields),
         mate: args
@@ -116,15 +120,22 @@ struct VerifyReport {
 }
 
 pub fn run(args: &VerifyCommand) -> Result<()> {
-    let report = compute(args)?;
+    let reports = args
+        .input
+        .iter()
+        .map(|path| compute(args, path))
+        .collect::<Result<Vec<_>>>()?;
 
     if args.opts.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        // a single input keeps the original object shape
+        match reports.as_slice() {
+            [one] => println!("{}", serde_json::to_string_pretty(one)?),
+            _ => println!("{}", serde_json::to_string_pretty(&reports)?),
+        }
     } else {
-        println!(
-            "{}\t{}\t{}",
-            report.checksum, report.num_records, report.path
-        );
+        for r in &reports {
+            println!("{}\t{}\t{}", r.checksum, r.num_records, r.path);
+        }
     }
 
     Ok(())
@@ -158,7 +169,7 @@ mod tests {
         let mut cmd_args = vec!["verify".to_string(), path.to_str().unwrap().to_string()];
         cmd_args.extend(extra.iter().map(std::string::ToString::to_string));
         let cmd = crate::cli::VerifyCommand::try_parse_from(cmd_args)?;
-        Ok(u64::from_str_radix(&super::compute(&cmd)?.checksum, 16)?)
+        Ok(u64::from_str_radix(&super::compute(&cmd, path.to_str().unwrap())?.checksum, 16)?)
     }
 
     /// Re-encoding the same input twice (independent parallel runs, so record
@@ -360,6 +371,24 @@ mod tests {
 
         assert!(checksum(bq_tmp.path(), &["-M", "1"]).is_ok());
         assert!(checksum(bq_tmp.path(), &["-M", "both"]).is_ok());
+        Ok(())
+    }
+
+    /// Multiple inputs are accepted and each is checksummed.
+    #[test]
+    fn test_verify_multiple_inputs() -> Result<()> {
+        let in_tmp = write_fastx().call()?;
+        let a = NamedTempFile::with_suffix(".cbq")?;
+        let b = NamedTempFile::with_suffix(".cbq")?;
+        encode(in_tmp.path(), a.path(), &[])?;
+        encode(in_tmp.path(), b.path(), &[])?;
+        let cmd = crate::cli::VerifyCommand::try_parse_from([
+            "verify",
+            a.path().to_str().unwrap(),
+            b.path().to_str().unwrap(),
+        ])?;
+        assert_eq!(cmd.input.len(), 2);
+        super::run(&cmd)?;
         Ok(())
     }
 
