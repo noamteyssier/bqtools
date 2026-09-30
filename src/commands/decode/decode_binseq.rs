@@ -25,8 +25,8 @@ pub struct Decoder {
     /// Options
     format: FileFormat,
     mate: Mate,
-    /// Optional `(fraction, seed)` keep-filter
-    sample: Option<(f64, u64)>,
+    /// Optional keep-filter
+    sample: Option<Sample>,
 
     /// Global values
     global_writer: Arc<Mutex<SplitWriter>>,
@@ -38,7 +38,7 @@ impl Decoder {
         writer: SplitWriter,
         format: FileFormat,
         mate: Mate,
-        sample: Option<(f64, u64)>,
+        sample: Option<Sample>,
     ) -> Self {
         Decoder {
             batch: Batch::new(&writer),
@@ -59,17 +59,50 @@ impl Decoder {
 }
 
 /// Keep/drop decision as a pure function of `(seed, record index)`.
-pub fn keep(index: u64, fraction: f64, seed: u64) -> bool {
+fn keep(index: u64, fraction: f64, seed: u64) -> bool {
     rand::rngs::SmallRng::seed_from_u64(seed.wrapping_add(index)).random_bool(fraction)
+}
+
+/// Record sampling strategy.
+#[derive(Clone)]
+pub enum Sample {
+    /// Keep each record independently with probability `fraction`.
+    Fraction { fraction: f64, seed: u64 },
+    /// Keep exactly the records whose bit is set, offset by `start`.
+    Exact {
+        start: usize,
+        bits: Arc<fixedbitset::FixedBitSet>,
+    },
+}
+impl Sample {
+    /// Choose exactly `min(n, range.len())` indices from `range`.
+    pub fn exact(n: usize, range: std::ops::Range<usize>, seed: u64) -> Self {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+        let n = n.min(range.len());
+        let mut bits = fixedbitset::FixedBitSet::with_capacity(range.len());
+        bits.extend(rand::seq::index::sample(&mut rng, range.len(), n));
+        Self::Exact {
+            start: range.start,
+            bits: Arc::new(bits),
+        }
+    }
+
+    pub fn keep(&self, index: u64) -> bool {
+        match self {
+            Self::Fraction { fraction, seed } => keep(index, *fraction, *seed),
+            Self::Exact { start, bits } => (index as usize)
+                .checked_sub(*start)
+                .is_some_and(|i| bits.contains(i)),
+        }
+    }
 }
 
 impl ParallelProcessor for Decoder {
     fn process_record<B: BinseqRecord>(&mut self, record: B) -> Result<()> {
         // Keep/drop is a pure function of `(seed, record index)`, so the sample is
         // reproducible regardless of thread count or batch boundaries.
-        if let Some((fraction, seed)) = self.sample {
-            let index = record.index();
-            if !keep(index, fraction, seed) {
+        if let Some(sample) = &self.sample {
+            if !sample.keep(record.index()) {
                 return Ok(());
             }
         }

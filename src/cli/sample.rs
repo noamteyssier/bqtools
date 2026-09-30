@@ -28,8 +28,15 @@ pub struct SampleArgs {
     ///
     /// Each record is kept independently with this probability, so the output
     /// count is approximate. Applied within `--span` when given.
-    #[clap(short = 'F', long, value_parser = parse_fraction)]
-    pub fraction: f64,
+    #[clap(short = 'F', long, value_parser = parse_fraction, required_unless_present = "num", conflicts_with = "num")]
+    pub fraction: Option<f64>,
+
+    /// Exact number of reads to keep
+    ///
+    /// Selects exactly this many records uniformly at random, drawn from
+    /// `--span` when given. If it exceeds the available records, all are kept.
+    #[clap(short = 'n', long)]
+    pub num: Option<usize>,
 
     /// Seed for random sampling
     ///

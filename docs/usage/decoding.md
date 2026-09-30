@@ -41,11 +41,14 @@ bqtools decode reads.cbq --span 1000..2000 -o slice.fq
 
 ## Subsample
 
-Each record is kept with probability [`-F`](../commands/sample.md#sample--fraction), so output size is approximate. Output options match `decode`.
+Each record is kept with probability [`-F`](../commands/sample.md#sample--fraction), so output size is approximate. Use [`-n`](../commands/sample.md#sample--num) instead for an exact count. Output options match `decode`.
 
 ```bash
 # ~10% of reads
 bqtools sample reads.cbq -F 0.1 -o subset.fastq.gz
+
+# exactly 1000 reads
+bqtools sample reads.cbq -n 1000 -o subset.fastq.gz
 
 # same seed, same records, at any thread count
 bqtools sample reads.cbq -F 0.1 -S 7 -o subset.fq

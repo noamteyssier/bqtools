@@ -1,6 +1,6 @@
 [package]
 name = "bqtools"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 license = "MIT"
 authors = ["Noam Teyssier"]
@@ -21,7 +21,7 @@ gzp = "2.0.4"
 hashbrown = "0.17.1"
 libc = "0.2.189"
 log = "0.4.34"
-paraseq = "0.6.0"
+paraseq = "0.6.1"
 rand = "0.10.3"
 regex = "1.13.1"
 sassy = { version = "0.2.6", default-features = false, optional = true }

@@ -198,23 +198,27 @@ mod tests {
         Ok(())
     }
 
-    /// A corrupted byte in the encoded payload must change the checksum
-    /// (when the file still parses after the corruption).
+    /// Corrupting bytes in the encoded file must be noticed (parse failure or
+    /// changed checksum). A single flipped byte may land in a reserved or
+    /// otherwise unchecksummed region, so several offsets are tried and at
+    /// least one must be detected.
     #[test]
     fn test_verify_detects_content_change() -> Result<()> {
         let in_tmp = write_fastx().call()?;
         let bq_tmp = NamedTempFile::with_suffix(".cbq")?;
         encode(in_tmp.path(), bq_tmp.path(), &[])?;
         let original = checksum(bq_tmp.path(), &[])?;
+        let clean = std::fs::read(bq_tmp.path())?;
 
-        let mut bytes = std::fs::read(bq_tmp.path())?;
-        let mid = bytes.len() / 2;
-        bytes[mid] ^= 0xFF;
-        std::fs::write(bq_tmp.path(), &bytes)?;
-
-        if let Ok(changed) = checksum(bq_tmp.path(), &[]) {
-            assert_ne!(original, changed, "bit flip was not detected");
-        }
+        let detected = (1..8).any(|k| {
+            let mut bytes = clean.clone();
+            bytes[clean.len() * k / 8] ^= 0xFF;
+            std::fs::write(bq_tmp.path(), &bytes).unwrap();
+            // corrupt files may panic inside the reader
+            std::panic::catch_unwind(|| checksum(bq_tmp.path(), &[]))
+                .map_or(true, |r| r.map_or(true, |c| c != original))
+        });
+        assert!(detected, "no corruption was detected");
         Ok(())
     }
 

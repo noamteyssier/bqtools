@@ -199,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "bqtools"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -1281,9 +1281,9 @@ dependencies = [
 
 [[package]]
 name = "paraseq"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcb142a898e1c9b06e84df178bb4e9ca0a89ed6c45c2ff3beb173bf27bb97a8f"
+checksum = "ee9e3a05bd64bdf81fdd79a7e60d6687be02ac4f327fbb9aea521424de79c77e"
 dependencies = [
  "anyhow",
  "crossbeam-channel",

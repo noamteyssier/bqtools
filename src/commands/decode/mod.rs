@@ -2,7 +2,7 @@ mod decode_binseq;
 mod utils;
 
 use crate::cli::{DecodeCommand, FileFormat, InputBinseq, Mate, OutputFile};
-pub use decode_binseq::{keep, Decoder};
+pub use decode_binseq::{Decoder, Sample};
 pub use utils::{fill_qual, write_record, Batch, SeqRead, SplitWriter};
 
 use anyhow::{bail, Result};
@@ -35,11 +35,11 @@ pub fn build_writer(args: &OutputFile, format: FileFormat, paired: bool) -> Resu
     }
 }
 
-/// Decode records to the output, optionally keeping only a `(fraction, seed)` sample.
+/// Decode records to the output, optionally keeping only a sample.
 pub fn run_with(
     input: &InputBinseq,
     output: &OutputFile,
-    sample: Option<(f64, u64)>,
+    sample: impl FnOnce(std::ops::Range<usize>) -> Option<Sample>,
 ) -> Result<Decoder> {
     let reader = BinseqReader::new(input.path())?;
     let range = input.range(reader.num_records()?)?;
@@ -50,13 +50,13 @@ pub fn run_with(
     } else {
         Mate::One
     };
-    let proc = Decoder::new(writer, format, mate, sample);
+    let proc = Decoder::new(writer, format, mate, sample(range.clone()));
     reader.process_parallel_range(proc.clone(), output.threads(), range)?;
     Ok(proc)
 }
 
 pub fn run(args: &DecodeCommand) -> Result<()> {
-    let proc = run_with(&args.input, &args.output, None)?;
+    let proc = run_with(&args.input, &args.output, |_| None)?;
     info!("Processed {} records...", proc.num_records());
     Ok(())
 }
