@@ -5,8 +5,9 @@ use binseq::BinseqRecord;
 use hashbrown::HashMap;
 use log::trace;
 use serde::Serialize;
+use serde_json::{json, Value};
 
-use super::report::{dual_section, pct, table, write_tsv, Hist, Pair};
+use super::report::{dual_section, pct, sides_json, table, write_tsv, Hist, Pair};
 use crate::{cli::QcOptions, commands::match_output};
 
 /// FastQC-style duplication level buckets: exact counts 1-9, then cumulative
@@ -220,6 +221,19 @@ impl Hist for DuplicationCounter {
             ],
         ))
     }
+
+    fn json(&self) -> Option<Value> {
+        if self.is_empty() {
+            return None;
+        }
+        let distinct = self.inner.len();
+        let total = self.total_reads();
+        Some(json!({
+            "sampled_reads": total,
+            "distinct": distinct,
+            "pct_unique": pct(distinct, total),
+        }))
+    }
 }
 
 #[derive(Clone)]
@@ -293,6 +307,32 @@ impl SequenceDuplicationLevels {
         }
 
         Ok(())
+    }
+
+    pub fn json(&self) -> Value {
+        let mut out = serde_json::Map::new();
+        if self.emit_levels {
+            out.insert("levels".into(), self.counts.json());
+        }
+        if self.emit_overrepresented {
+            let (p, x) = self.counts.map(|c| {
+                let rows: Vec<Value> = c
+                    .overrepresented(self.overrepresented_threshold)
+                    .into_iter()
+                    .map(|(seq, count, pct)| {
+                        json!({"sequence": String::from_utf8_lossy(seq), "count": count, "pct": pct})
+                    })
+                    .collect();
+                (!rows.is_empty()).then(|| Value::from(rows))
+            });
+            out.insert("overrepresented".into(), sides_json(p, x));
+        }
+        out.retain(|_, v| !v.is_null());
+        if out.is_empty() {
+            Value::Null
+        } else {
+            out.into()
+        }
     }
 
     pub fn summarize(&self) -> String {

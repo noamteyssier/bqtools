@@ -3,6 +3,7 @@ use std::{io::Write, path::Path};
 use anyhow::Result;
 use binseq::BinseqRecord;
 use serde::Serialize;
+use serde_json::{json, Value};
 
 use super::report::{add_assign, pct, table, write_tsv, Hist, Pair};
 
@@ -157,6 +158,27 @@ impl Hist for BaseContentHistogram {
             .collect();
         Some(table(&["Base", "Count", "Pct"], &rows))
     }
+
+    fn json(&self) -> Option<Value> {
+        if self.is_empty() {
+            return None;
+        }
+        let totals = self.totals();
+        let total: usize = totals.iter().sum();
+        Some(
+            ["A", "C", "G", "T", "N"]
+                .iter()
+                .zip(totals)
+                .map(|(base, count)| {
+                    (
+                        (*base).to_string(),
+                        json!({"count": count, "pct": pct(count, total)}),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>()
+                .into(),
+        )
+    }
 }
 
 #[derive(Clone, Default)]
@@ -177,6 +199,10 @@ impl PerBaseSequenceContent {
 
     pub fn summarize(&self) -> String {
         self.0.summarize("Per-Base Sequence Content")
+    }
+
+    pub fn json(&self) -> Value {
+        self.0.json()
     }
 }
 

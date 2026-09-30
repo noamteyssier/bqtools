@@ -164,7 +164,41 @@ mod tests {
         )?)?;
         assert_eq!(v["reads"], 100);
         assert_eq!(v["paired"], false);
-        assert!(!v["modules"].as_array().unwrap().is_empty());
+        assert!(v["modules"].is_object());
+        assert!(
+            v["modules"]["sequence_length"]["R1"]["min"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(v["modules"]["sequence_length"]["R2"].is_null());
+        assert_eq!(
+            v["modules"]["duplication"]["levels"]["R1"]["sampled_reads"],
+            100
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_qc_json_paired_has_r2() -> Result<()> {
+        let r1 = write_fastx().nrec(50).call()?;
+        let r2 = write_fastx().nrec(50).call()?;
+        let bq = NamedTempFile::with_suffix(".cbq")?;
+        encode(&[r1.path(), r2.path()], bq.path())?;
+
+        let outdir = tempdir()?;
+        run_qc(bq.path(), outdir.path(), &["--json", "--skip-dup-levels"])?;
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
+            outdir.path().join("summary.json"),
+        )?)?;
+        assert_eq!(v["paired"], true);
+        assert!(
+            v["modules"]["sequence_length"]["R2"]["min"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(v["modules"]["duplication"]["levels"].is_null());
         Ok(())
     }
 

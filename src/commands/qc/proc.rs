@@ -92,13 +92,14 @@ impl QcProcessor {
         Ok(())
     }
 
-    /// Writes `summary.json`: the overview plus each module's markdown summary.
+    /// Writes `summary.json`: the overview plus each module's structured stats.
     fn write_json(&self) -> Result<()> {
-        let modules: Vec<String> = self
+        let modules: serde_json::Map<_, _> = self
             .modules
             .iter()
-            .map(QcModuleType::summarize)
-            .filter(|s| !s.is_empty())
+            .map(QcModuleType::json)
+            .filter(|(_, v)| !v.is_null())
+            .map(|(k, v)| (k.to_string(), v))
             .collect();
         let report = serde_json::json!({
             "input": self.input_path,

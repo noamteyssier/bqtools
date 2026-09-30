@@ -1,6 +1,7 @@
 use anyhow::Result;
 use binseq::BinseqRecord;
 use serde::Serialize;
+use serde_json::{json, Value};
 use std::{io::Write, path::Path};
 
 use super::{
@@ -76,6 +77,14 @@ impl Hist for QualHistogram {
             ],
         ))
     }
+
+    fn json(&self) -> Option<Value> {
+        if self.is_empty() {
+            return None;
+        }
+        let (reads, mean, median, _) = stats(&self.inner);
+        Some(json!({"reads": reads, "mean_quality": mean, "median_quality": median}))
+    }
 }
 
 #[derive(Default, Clone)]
@@ -96,6 +105,10 @@ impl PerSequenceQuality {
 
     pub fn summarize(&self) -> String {
         self.0.summarize("Per-Sequence Quality")
+    }
+
+    pub fn json(&self) -> Value {
+        self.0.json()
     }
 }
 
