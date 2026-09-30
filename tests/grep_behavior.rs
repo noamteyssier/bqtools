@@ -454,6 +454,20 @@ fn rejected_invocations() {
 }
 
 #[test]
+fn split_rejects_xfile_on_single_end() {
+    let f = Fixture::new();
+    let x = f.file("x.txt", "GATTACAGAT\n");
+    let out = Command::new(env!("CARGO_BIN_EXE_bqtools"))
+        .args(["split"])
+        .arg(&f.single)
+        .args(["-R", &x, "--basepath"])
+        .arg(f.dir.path().join("o"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
 fn count_rejects_compress() {
     let fx = Fixture::new();
     for flag in ["-C", "-F", "-P"] {

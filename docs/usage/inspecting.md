@@ -32,8 +32,8 @@ bqtools info reads.cbq --json | jq '.[0].num_records'
 ```bash
 bqtools verify reads.cbq
 
-# compare two files
-[ "$(bqtools verify a.cbq | cut -f1)" = "$(bqtools verify b.cbq | cut -f1)" ] && echo same
+# compare files: one line per input, equal checksums (first column) mean the same content
+bqtools verify a.cbq b.cbq
 ```
 
 ```bash
