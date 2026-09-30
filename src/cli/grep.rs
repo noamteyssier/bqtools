@@ -399,6 +399,7 @@ impl PatternFileArgs {
             let contents = std::fs::read_to_string(path)?;
             Ok(contents
                 .lines()
+                .filter(|line| !line.trim().is_empty())
                 .map(|line| Pattern {
                     name: None,
                     sequence: line.as_bytes().to_vec(),
