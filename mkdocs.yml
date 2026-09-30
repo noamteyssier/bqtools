@@ -8,7 +8,7 @@ theme:
   variant: modern
   font:
     text: Inter
-    code: JetBrains Mono
+    code: Monaspace
   features:
     - navigation.sections
     - navigation.instant
