@@ -52,6 +52,9 @@ bqtools sample reads.cbq -F 0.1 -S 7 -o subset.fq
 
 # paired into subset_R1.fq / subset_R2.fq
 bqtools sample sample.cbq -F 0.5 --prefix subset -f q
+
+# into a new BINSEQ file (extension must match the input: .bq, .vbq, .cbq)
+bqtools sample reads.cbq -F 0.1 -o subset.cbq
 ```
 
 ## Concatenate

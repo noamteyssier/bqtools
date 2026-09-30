@@ -60,4 +60,7 @@ bqtools qc reads.cbq -o qc
 
 # first 100k records, skip the slow modules
 bqtools qc reads.cbq -o qc --span ..100000 --skip-dup-levels --skip-overrepresented
+
+# also write summary.json
+bqtools qc reads.cbq -o qc --json
 ```
