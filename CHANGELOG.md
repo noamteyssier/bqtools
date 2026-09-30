@@ -2,17 +2,27 @@
 
 ## 0.6.0
 
-A dependency-refresh and internal cleanup release, with a grep engine consolidation, a few bug fixes, and one new flag (`pipe --span`). Also, `encode` no longer logs an `error!` line before bailing, so those errors now print once, via `anyhow`. The work landed as stacked PRs (#7–#80) on `dev-0.6.0`.
+A dependency-refresh and internal cleanup release, with a grep engine consolidation, a few bug fixes, and a few new flags (`pipe --span`, `qc --json`, BINSEQ output for `sample`). Also, `encode` no longer logs an `error!` line before bailing, so those errors now print once, via `anyhow`. The work landed as stacked PRs (#7–#80) on `dev-0.6.0`.
 
 ### Features
 
 - `pipe` supports `--span` to restrict processing to a range of records (#80)
+- `qc --json` also writes `summary.json` with an overview and per-module summaries (#95)
+- `sample -o out.{bq,vbq,cbq}` writes a BINSEQ file, keeping the input mode (#101)
 
 ### Fixes
 
 - `grep` rejects extended patterns on single-end input instead of accepting them
 - `grep` fuzzy matching skips empty sequences
 - `pipe` errors when the output path already exists and is not a fifo. Symlinks are not followed (#76)
+- `grep` skips blank lines in plain-text pattern files instead of matching every record (#93)
+- `grep` rejects `-c` with `-C`, `-F` and `-P` (#99)
+- `encode` rejects `--pipe` in batch mode and removes the partial output of a failed single encode (#94)
+- `revcomp`, `decode`, `split` and `grep` validate `--span` before creating output (#96)
+- `verify` errors when the skip flags leave no fields the file stores (#97)
+- `info --show-headers` skips non-CBQ inputs with a warning instead of panicking (#98)
+- `pipe --help` no longer renders `{n}` as a line break (#100)
+- `split --xfile` is rejected on single-end input (#102)
 
 ### Dependencies
 
