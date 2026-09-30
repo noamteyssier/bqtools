@@ -1,6 +1,6 @@
 mod splitter;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use binseq::BinseqReader;
 
 use splitter::{SplitProcessor, Splitter};
@@ -14,8 +14,11 @@ use crate::{
 };
 
 /// Loads the primary-only, secondary-only and either-sequence pattern sets.
-fn load_patterns(args: &SplitCommand) -> Result<PatternSets> {
+fn load_patterns(args: &SplitCommand, paired: bool) -> Result<PatternSets> {
     let mut patterns = args.patterns.load_all_patterns()?;
+    if !paired && !patterns.pat2.is_empty() {
+        bail!("-R/--xfile patterns require paired input");
+    }
     if args.split.rc {
         patterns.reverse_complement()?;
     }
@@ -27,8 +30,8 @@ fn load_patterns(args: &SplitCommand) -> Result<PatternSets> {
 /// Fuzzy matching (`-z/--fuzzy`) takes priority when enabled. Otherwise,
 /// fixed-string pattern sets use the Aho-Corasick backend (auto-detected, or
 /// forced with `-x/--fixed`); anything else falls back to the regex backend.
-fn build_splitter(args: &SplitCommand) -> Result<Splitter> {
-    let patterns = load_patterns(args)?;
+fn build_splitter(args: &SplitCommand, paired: bool) -> Result<Splitter> {
+    let patterns = load_patterns(args, paired)?;
 
     #[cfg(feature = "fuzzy")]
     if args.fuzzy_args.fuzzy {
@@ -60,8 +63,8 @@ fn build_splitter(args: &SplitCommand) -> Result<Splitter> {
 }
 
 pub fn run(args: &SplitCommand) -> Result<()> {
-    let splitter = build_splitter(args)?;
     let reader = BinseqReader::new(args.input.path())?;
+    let splitter = build_splitter(args, reader.is_paired())?;
     let builder = builder_from_reader(&reader);
     std::fs::create_dir_all(&args.split.basepath)?;
     let mut proc = SplitProcessor::new(splitter, &builder, args)?;

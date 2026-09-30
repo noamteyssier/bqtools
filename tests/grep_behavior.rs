@@ -448,3 +448,17 @@ fn rejected_invocations() {
     #[cfg(feature = "fuzzy")]
     fails(false, &["-z", "GATTA", "CC"]); // mixed pattern lengths
 }
+
+#[test]
+fn split_rejects_xfile_on_single_end() {
+    let f = Fixture::new();
+    let x = f.file("x.txt", "GATTACAGAT\n");
+    let out = Command::new(env!("CARGO_BIN_EXE_bqtools"))
+        .args(["split"])
+        .arg(&f.single)
+        .args(["-R", &x, "--basepath"])
+        .arg(f.dir.path().join("o"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
