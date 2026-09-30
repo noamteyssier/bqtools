@@ -2,7 +2,10 @@ use clap::Parser;
 
 use super::{InputBinseq, OutputFile};
 
-/// Subsample a BINSEQ file and output to FASTQ, FASTA, or TSV
+/// Subsample a BINSEQ file and output to FASTQ, FASTA, TSV, or BINSEQ
+///
+/// An `-o` ending in `.bq/.vbq/.cbq` writes a BINSEQ file in the input's mode
+/// and settings (the extension must match the input).
 ///
 /// Output defaults to TSV on stdout; use `-o reads.fastq[.gz]` or `-f q` for
 /// FASTQ. Record order in the output is not preserved.
