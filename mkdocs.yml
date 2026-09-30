@@ -44,6 +44,13 @@ nav:
   - Introduction: index.md
   - Installation: installation.md
   - Formats: formats.md
+  - Usage:
+      - encoding: usage/encoding.md
+      - decoding: usage/decoding.md
+      - inspecting: usage/inspecting.md
+      - piping: usage/pipe.md
+      - searching: usage/searching.md
+      - recipes: usage/recipes.md
   - Commands:
       - encode: commands/encode.md
       - decode: commands/decode.md

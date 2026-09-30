@@ -2,7 +2,7 @@
 
 A command-line tool for [BINSEQ](https://github.com/noamteyssier/binseq) files (`*.bq`, `*.vbq`, `*.cbq`).
 
-Start with [Installation](installation.md), then see [Formats](formats.md) to choose a variant. Every command has its own reference page.
+Start with [Installation](installation.md), then see [Formats](formats.md) to choose a variant and [Usage](usage/encoding.md) for worked examples. Every command has its own reference page.
 
 ## Commands
 
