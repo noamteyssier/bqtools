@@ -245,6 +245,7 @@ impl InputBinseq {
             BinseqReader::Bq(_) => Ok(BinseqMode::Bq),
             BinseqReader::Vbq(_) => Ok(BinseqMode::Vbq),
             BinseqReader::Cbq(_) => Ok(BinseqMode::Cbq),
+            _ => unimplemented!("Unrecognized reader type"),
         }
     }
 }

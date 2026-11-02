@@ -46,6 +46,7 @@ pub fn builder_from_reader(reader: &BinseqReader) -> BinseqWriterBuilder {
         BinseqReader::Bq(r) => BinseqWriterBuilder::from_bq_header(r.header()),
         BinseqReader::Vbq(r) => BinseqWriterBuilder::from_vbq_header(r.header()),
         BinseqReader::Cbq(r) => BinseqWriterBuilder::from_cbq_header(r.header()),
+        _ => unimplemented!("Unrecognized reader type"),
     }
 }
 
@@ -120,7 +121,7 @@ pub fn build_fuzzy_searcher(
             (k as f32 / pattern_len as f32).min(1.0)
         }
     });
-    let mut searcher = Searcher::new_fwd().with_max_n_frac(frac);
+    let searcher = Searcher::new_fwd().with_max_n_frac(frac);
     let encoded = (!patterns.is_empty()).then(|| searcher.encode_patterns(patterns));
     Ok((searcher, encoded))
 }

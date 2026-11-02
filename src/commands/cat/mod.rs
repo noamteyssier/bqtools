@@ -31,6 +31,7 @@ fn determine_mode(paths: &[String]) -> Result<BinseqMode> {
                 BinseqReader::Bq(_) => BinseqMode::Bq,
                 BinseqReader::Vbq(_) => BinseqMode::Vbq,
                 BinseqReader::Cbq(_) => BinseqMode::Cbq,
+                _ => unimplemented!("Unrecognized reader type"),
             })
         })
         .collect::<Result<Vec<_>>>()?;
