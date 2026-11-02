@@ -134,7 +134,7 @@ struct CbqInfo {
     quality: bool,
     headers: bool,
     flags: bool,
-    compression_level: u64,
+    compression_level: i32,
     block_size: u64,
     mean_block_size: f64,
     num_blocks: usize,
@@ -223,6 +223,7 @@ impl BinseqInfo {
                 &cbq_reader,
                 num_records,
             ))),
+            _ => unimplemented!("Unrecognized reader type"),
         }
     }
     pub fn tabular(&self) {

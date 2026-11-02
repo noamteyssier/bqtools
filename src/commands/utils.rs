@@ -46,6 +46,7 @@ pub fn builder_from_reader(reader: &BinseqReader) -> BinseqWriterBuilder {
         BinseqReader::Bq(r) => BinseqWriterBuilder::from_bq_header(r.header()),
         BinseqReader::Vbq(r) => BinseqWriterBuilder::from_vbq_header(r.header()),
         BinseqReader::Cbq(r) => BinseqWriterBuilder::from_cbq_header(r.header()),
+        _ => unimplemented!("Unrecognized reader type"),
     }
 }
 

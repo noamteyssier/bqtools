@@ -23,6 +23,7 @@ fn reader_has_headers(reader: &BinseqReader) -> bool {
         BinseqReader::Bq(_) => false,
         BinseqReader::Vbq(reader) => reader.header().headers,
         BinseqReader::Cbq(reader) => reader.header().has_headers(),
+        _ => unimplemented!("Unrecognized reader type"),
     }
 }
 
@@ -75,6 +76,7 @@ fn compute(args: &VerifyCommand, path: &str) -> Result<VerifyReport> {
         BinseqReader::Bq(_) => (false, false),
         BinseqReader::Vbq(r) => (r.header().qual, r.header().flags),
         BinseqReader::Cbq(r) => (r.header().has_qualities(), r.header().has_flags()),
+        _ => unimplemented!("Unrecognized reader type"),
     };
     if fields.headers && !reader_has_headers(&reader) {
         warn!("`{path}` has no header data; excluding headers from the checksum");
