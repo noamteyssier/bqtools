@@ -121,7 +121,7 @@ pub fn build_fuzzy_searcher(
             (k as f32 / pattern_len as f32).min(1.0)
         }
     });
-    let mut searcher = Searcher::new_fwd().with_max_n_frac(frac);
+    let searcher = Searcher::new_fwd().with_max_n_frac(frac);
     let encoded = (!patterns.is_empty()).then(|| searcher.encode_patterns(patterns));
     Ok((searcher, encoded))
 }
