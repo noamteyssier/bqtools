@@ -34,6 +34,15 @@ bqtools decode sample.cbq --prefix sample -f q -c g
 
 See [Usage](https://noamteyssier.github.io/bqtools/usage/encoding/) for examples and [Commands](https://noamteyssier.github.io/bqtools/commands/encode/) for the full reference.
 
+## Development
+
+Commits are checked with [`prek`](https://github.com/j178/prek), which runs `cargo fmt --check` and `cargo clippy --all-targets --all-features -- -D warnings`.
+Register the hooks once per clone:
+
+```bash
+uv tool install prek && prek install
+```
+
 ## Citation
 
 ```
